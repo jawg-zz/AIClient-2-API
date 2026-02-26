@@ -7,9 +7,9 @@ services:
     restart: unless-stopped
     ports:
       - "3000"
-      - "8085-8087" 
-      - "1455"
-      - "19876-19880"
+      - "8085-8087:8085-8087" 
+      - "1455:1455"
+      - "19876-19880:19876-19880"
     volumes:
       - ./configs:/app/configs
     environment:
