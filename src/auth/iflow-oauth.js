@@ -110,6 +110,20 @@ async function fetchWithProxy(url, options = {}, providerType) {
  */
 function generateResponsePage(isSuccess, message) {
     const title = isSuccess ? '授权成功！' : '授权失败';
+    const countdownHtml = isSuccess ? `
+        <p>此窗口将在 <span id="countdown" style="font-weight: bold; color: #2196f3;">10</span> 秒后自动关闭。</p>
+        <script>
+            let countdown = 10;
+            const timer = setInterval(() => {
+                countdown--;
+                const el = document.getElementById('countdown');
+                if (el) el.textContent = countdown;
+                if (countdown <= 0) {
+                    clearInterval(timer);
+                    window.close();
+                }
+            }, 1000);
+        </script>` : '';
     
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -117,11 +131,34 @@ function generateResponsePage(isSuccess, message) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${title}</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f5f5f5;
+        }
+        .container {
+            text-align: center;
+            padding: 2rem;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            max-width: 400px;
+            width: 90%;
+        }
+        h1 { color: ${isSuccess ? '#4caf50' : '#f44336'}; margin-top: 0; }
+        p { color: #666; line-height: 1.6; }
+    </style>
 </head>
 <body>
     <div class="container">
-        <h1>${title}</h1>
+        <h1>${isSuccess ? '✅' : '❌'} ${title}</h1>
         <p>${message}</p>
+        ${countdownHtml}
     </div>
 </body>
 </html>`;
@@ -253,25 +290,31 @@ async function fetchIFlowUserInfo(accessToken) {
 async function closeIFlowServer(provider, port = null) {
     const existing = activeIFlowServers.get(provider);
     if (existing) {
-        await new Promise((resolve) => {
-            existing.server.close(() => {
-                activeIFlowServers.delete(provider);
-                logger.info(`${IFLOW_OAUTH_CONFIG.logPrefix} 已关闭提供商 ${provider} 在端口 ${existing.port} 上的旧服务器`);
-                resolve();
+        try {
+            const closePromise = new Promise((resolve, reject) => {
+                existing.server.close((err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
             });
-        });
+
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('Server close timeout after 2s')), 2000);
+            });
+
+            await Promise.race([closePromise, timeoutPromise]);
+            logger.info(`${IFLOW_OAUTH_CONFIG.logPrefix} 已关闭提供商 ${provider} 在端口 ${existing.port} 上的旧服务器`);
+        } catch (error) {
+            logger.warn(`${IFLOW_OAUTH_CONFIG.logPrefix} 关闭提供商 ${provider} 服务器失败或超时: ${error.message}`);
+        } finally {
+            activeIFlowServers.delete(provider);
+        }
     }
 
     if (port) {
         for (const [p, info] of activeIFlowServers.entries()) {
             if (info.port === port) {
-                await new Promise((resolve) => {
-                    info.server.close(() => {
-                        activeIFlowServers.delete(p);
-                        logger.info(`${IFLOW_OAUTH_CONFIG.logPrefix} 已关闭端口 ${port} 上的旧服务器`);
-                        resolve();
-                    });
-                });
+                await closeIFlowServer(p);
             }
         }
     }

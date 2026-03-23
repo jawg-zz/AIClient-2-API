@@ -53,6 +53,8 @@ export class ClaudeConverter extends BaseConverter {
                 return this.toOpenAIResponsesRequest(data);
             case MODEL_PROTOCOL_PREFIX.CODEX:
                 return this.toCodexRequest(data);
+            case MODEL_PROTOCOL_PREFIX.GROK:
+                return this.toGrokRequest(data);
             default:
                 throw new Error(`Unsupported target protocol: ${targetProtocol}`);
         }
@@ -676,7 +678,17 @@ export class ClaudeConverter extends BaseConverter {
      * 处理Claude内容到OpenAI格式
      */
     processClaudeContentToOpenAIContent(content) {
-        if (!content || !Array.isArray(content)) return [];
+        if (!content) return [];
+        
+        // 如果是字符串，直接转换为 OpenAI 的文本块格式
+        if (typeof content === 'string') {
+            return [{
+                type: 'text',
+                text: content
+            }];
+        }
+
+        if (!Array.isArray(content)) return [];
         
         const contentArray = [];
         
@@ -735,7 +747,11 @@ export class ClaudeConverter extends BaseConverter {
      * 处理Claude响应内容
      */
     processClaudeResponseContent(content) {
-        if (!content || !Array.isArray(content)) return '';
+        if (!content) return '';
+        
+        if (typeof content === 'string') return content;
+
+        if (!Array.isArray(content)) return '';
         
         const contentArray = [];
         
@@ -2081,6 +2097,18 @@ export class ClaudeConverter extends BaseConverter {
     }
 
     /**
+     * Claude请求 -> Grok请求
+     */
+    toGrokRequest(claudeRequest) {
+        // 先转换为 OpenAI 格式，因为 Grok 兼容 OpenAI 格式
+        const openaiRequest = this.toOpenAIRequest(claudeRequest);
+        return {
+            ...openaiRequest,
+            _isConverted: true
+        };
+    }
+
+    /**
      * Claude响应 -> Codex响应 (实际上是 Codex 转 Claude)
      */
     toCodexResponse(codexResponse, model) {
@@ -2135,6 +2163,7 @@ export class ClaudeConverter extends BaseConverter {
                     id: codexChunk.response.id,
                     type: "message",
                     role: "assistant",
+                    content: [],
                     model: model,
                     usage: { input_tokens: 0, output_tokens: 0 }
                 }

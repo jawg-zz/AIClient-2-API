@@ -30,20 +30,19 @@
 > - Thanks to Ruan Yifeng for the recommendation in [Weekly Issue 359](https://www.ruanyifeng.com/blog/2025/08/weekly-issue-359.html)
 >
 > **📅 Version Update Log**
->
+> 
 > <details>
 > <summary>Click to expand detailed version history</summary>
->
+> 
+> - **2026.03.02** - Added Grok protocol support, supporting access to xAI Grok series models (Grok 3/4) via Cookie/SSO, supporting multimodal input, image/video generation, automatic token refresh and streaming output
 > - **2026.01.26** - Added Codex protocol support: supports OpenAI Codex OAuth authorization access
 > - **2026.01.25** - Enhanced AI Monitor plugin: supports monitoring request parameters and responses before and after AI protocol conversion. Optimized log management: unified log format, visual configuration
 > - **2026.01.15** - Optimized provider pool manager: added async refresh queue mechanism, buffer queue deduplication, global concurrency control, node warmup and automatic expiry detection
-> - **2026.01.07** - Added iFlow protocol support, enabling access to Qwen, Kimi, DeepSeek, and GLM series models via OAuth authentication with automatic token refresh
-> - **2026.01.03** - Added theme switching functionality and optimized provider pool initialization, removed the fallback strategy of using provider default configuration
+> > - **2026.01.03** - Added theme switching functionality and optimized provider pool initialization, removed the fallback strategy of using provider default configuration
 > - **2025.12.30** - Added main process management and automatic update functionality
 > - **2025.12.25** - Unified configuration management: All configs centralized to `configs/` directory. Docker users need to update mount path to `-v "local_path:/app/configs"`
 > - **2025.12.11** - Automatically built Docker images are now available on Docker Hub: [justlikemaki/aiclient-2-api](https://hub.docker.com/r/justlikemaki/aiclient-2-api)
 > - **2025.11.30** - Added Antigravity protocol support, enabling access to Gemini 3 Pro, Claude Sonnet 4.5, and other models via Google internal interfaces
-> - **2025.11.16** - Added Ollama protocol support, unified interface to access all supported models (Claude, Gemini, Qwen, OpenAI, etc.)
 > - **2025.11.11** - Added Web UI management console, supporting real-time configuration management and health status monitoring
 > - **2025.11.06** - Added support for Gemini 3 Preview, enhanced model compatibility and performance optimization
 > - **2025.10.18** - Kiro open registration, new accounts get 500 credits, full support for Claude Sonnet 4.5
@@ -61,13 +60,14 @@
 ## 💡 Core Advantages
 
 ### 🎯 Unified Access, One-Stop Management
-*   **Multi-Model Unified Interface**: Through standard OpenAI-compatible protocol, configure once to access mainstream large models including Gemini, Claude, Qwen Code, Kimi K2, MiniMax M2
+*   **Multi-Model Unified Interface**: Through standard OpenAI-compatible protocol, configure once to access mainstream large models including Gemini, Claude, Grok, Qwen Code, Kimi K2, MiniMax M2
 *   **Flexible Switching Mechanism**: Path routing, support dynamic model switching via startup parameters or environment variables to meet different scenario requirements
 *   **Zero-Cost Migration**: Fully compatible with OpenAI API specifications, tools like Cherry-Studio, NextChat, Cline can be used without modification
 *   **Multi-Protocol Intelligent Conversion**: Support intelligent conversion between OpenAI, Claude, and Gemini protocols for cross-protocol model invocation
 
 ### 🚀 Break Through Limitations, Improve Efficiency
 *   **Bypass Official Restrictions**: Utilize OAuth authorization mechanism to effectively break through rate and quota limits of services like Gemini, Antigravity
+*   **TLS Fingerprint Bypass**: Built-in TLS Sidecar (Go uTLS) to simulate browser features, effectively bypassing Cloudflare 403 blocks for services like Grok
 *   **Free Advanced Models**: Use Claude Opus 4.5 for free via Kiro API mode, use Qwen3 Coder Plus via Qwen OAuth mode, reducing usage costs
 *   **Intelligent Account Pool Scheduling**: Support multi-account polling, automatic failover, and configuration degradation, ensuring 99.9% service availability
 
@@ -92,7 +92,6 @@
   - [📋 Core Features](#-core-features)
 - [🔐 Authorization Configuration Guide](#-authorization-configuration-guide)
 - [📁 Authorization File Storage Paths](#-authorization-file-storage-paths)
-- [🦙 Ollama Protocol Usage Examples](#-ollama-protocol-usage-examples)
 - [⚙️ Advanced Configuration](#advanced-configuration)
 - [❓ FAQ](#-faq)
 - [📄 Open Source License](#-open-source-license)
@@ -110,12 +109,12 @@ The most recommended way to use AIClient-2-API is to start it through an automat
 #### 🐳 Docker Quick Start (Recommended)
 
 ```bash
-docker run -d -p 3000:3000 -p 8085-8087:8085-8087 -p 1455:1455 -p 19876-19880:19876-19880 --restart=always -v "your_path:/app/configs" --name aiclient2api justlikemaki/aiclient-2-api
+docker run -d -p 3000:3000 -p 8085-8086:8085-8086 -p 1455:1455 -p 19876-19880:19876-19880 --restart=always -v "your_path:/app/configs" --name aiclient2api justlikemaki/aiclient-2-api
 ```
 
 **Parameter Description**:
 - `-d`: Run container in background
-- `-p 3000:3000 ...`: Port mapping. 3000 is for Web UI, others are for OAuth callbacks (Gemini: 8085, Antigravity: 8086, iFlow: 8087, Codex: 1455, Kiro: 19876-19880)
+- `-p 3000:3000 ...`: Port mapping. 3000 is for Web UI, others are for OAuth callbacks (Gemini: 8085, Antigravity: 8086, Codex: 1455, Kiro: 19876-19880)
 - `--restart=always`: Container auto-restart policy
 - `-v "your_path:/app/configs"`: Mount configuration directory (replace "your_path" with actual path, e.g., `/home/user/aiclient-configs`)
 - `--name aiclient2api`: Container name
@@ -139,6 +138,13 @@ To build from source instead of using the pre-built image, edit `docker-compose.
 *   **Linux/macOS**: `chmod +x install-and-run.sh && ./install-and-run.sh`
 *   **Windows**: Double-click `install-and-run.bat`
 
+> **💡 If the script fails, you can try manually installing dependencies and starting:**
+> ```bash
+> npm install
+> npm start
+> ```
+
+
 #### 2. Access the console
 After the server starts, open your browser and visit:
 👉 [**http://localhost:3000**](http://localhost:3000)
@@ -150,6 +156,15 @@ Go to the **"Configuration"** page, you can:
 *   ✅ Fill in the API Key for each provider or upload OAuth credential files
 *   ✅ Switch default model providers in real-time
 *   ✅ Monitor health status and real-time request logs
+
+#### 4. Local Environment Preparation (Non-Docker Users)
+If you are running directly on your local machine (via script or Node.js) and need to bypass TLS detection for services like Grok, please ensure:
+*   ✅ **Install Go Language**: Go to the [official Go website](https://go.dev/) to download and install (1.20+).
+*   ✅ **Manually Compile Sidecar**: Execute the following command to compile the TLS proxy component:
+    ```bash
+    cd tls-sidecar && go build -o tls-sidecar && cd ..
+    ```
+    *Note: If this binary file is not compiled, the TLS Sidecar feature will fail to start as it cannot find the executable.*
 
 #### Script Execution Example
 ```
@@ -203,6 +218,7 @@ Supports various input types such as images and documents, providing you with a 
 
 #### Latest Model Support
 Seamlessly support the following latest large models, just configure the corresponding endpoint in Web UI or [`configs/config.json`](./configs/config.json):
+*   **Grok 3 / Grok 4** - xAI's flagship models, now supported via Grok Cookie/SSO, supporting thinking models, image generation, and video generation
 *   **Claude 4.5 Opus** - Anthropic's strongest model ever, now supported via Kiro, Antigravity
 *   **Gemini 3 Pro** - Google's next-generation architecture preview, now supported via Gemini, Antigravity
 *   **Qwen3 Coder Plus** - Alibaba Tongyi Qianwen's latest code-specific model, now supported via Qwen Code
@@ -290,18 +306,20 @@ Notes:
 - `budget_tokens` is clamped to `[1024, 24576]` (default `20000` if omitted/invalid).
 - Token acquisition/refresh/pool rotation is unchanged.
 
-#### iFlow OAuth Configuration
-1. **First Authorization**: In Web UI's "Configuration" or "Provider Pools" page, click the "Generate Authorization" button for iFlow
-2. **Phone Login**: The system will open the iFlow authorization page, complete login verification using your phone number
-3. **Auto Save**: After successful authorization, the system will automatically obtain the API Key and save credentials
-4. **Supported Models**: Qwen3 series, Kimi K2, DeepSeek V3/R1, GLM-4.6/4.7, etc.
-5. **Auto Refresh**: The system will automatically refresh tokens when they are about to expire, no manual intervention required
-
 #### Codex OAuth Configuration
 1. **Generate Authorization**: On the Web UI "Provider Pools" or "Configuration" page, click the "Generate Authorization" button for Codex
 2. **Browser Login**: The system opens the OpenAI Codex authorization page to complete OAuth login
 3. **Auto Save**: After successful authorization, the system automatically saves the Codex OAuth credential file
 4. **Callback Port**: Ensure the OAuth callback port `1455` is not occupied
+
+#### Grok Cookie/SSO Configuration
+1. **Obtain SSO Token**: Log in to the [Grok official website](https://grok.com/), copy the value of `sso` from Application -> Cookies in browser developer tools
+2. **Enter Configuration**: In the Web UI "Configuration" page or directly modify the configuration file, enter the token into `GROK_COOKIE_TOKEN`
+3. **Supported Features**:
+   - Chat and Thinking models (Grok 3 Thinking)
+   - Image generation (Grok Imagine)
+   - Video generation (Grok Video)
+4. **Notes**: Ensure `GROK_USER_AGENT` matches the browser used when obtaining the cookie to avoid being blocked
 
 #### Account Pool Management Configuration
 1. **Create Pool Configuration File**: Create a configuration file referencing [provider_pools.json.example](./configs/provider_pools.json.example)
@@ -324,7 +342,6 @@ Default storage locations for authorization credential files of each service:
 | **Kiro** | `~/.aws/sso/cache/kiro-auth-token.json` | Kiro authentication token |
 | **Qwen** | `~/.qwen/oauth_creds.json` | Qwen OAuth credentials |
 | **Antigravity** | `~/.antigravity/oauth_creds.json` | Antigravity OAuth credentials (supports Claude 4.5 Opus) |
-| **iFlow** | `~/.iflow/oauth_creds.json` | iFlow OAuth credentials (supports Qwen, Kimi, DeepSeek, GLM) |
 | **Codex** | `~/.codex/oauth_creds.json` | Codex OAuth credentials |
 
 > **Note**: `~` represents the user home directory (Windows: `C:\Users\username`, Linux/macOS: `/home/username` or `/Users/username`)
@@ -332,40 +349,6 @@ Default storage locations for authorization credential files of each service:
 > **Custom Path**: Can specify custom storage location via relevant parameters in configuration file or environment variables
 
 </details>
-
----
-
-### 🦙 Ollama Protocol Usage Examples
-
-This project supports the Ollama protocol, allowing access to all supported models through a unified interface. The Ollama endpoint provides standard interfaces such as `/api/tags`, `/api/chat`, `/api/generate`, etc.
-
-**Ollama API Call Examples**:
-
-1. **List all available models**:
-```bash
-curl http://localhost:3000/ollama/api/tags \
-  -H "Authorization: Bearer your-api-key"
-```
-
-2. **Chat interface**:
-```bash
-curl http://localhost:3000/ollama/api/chat \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-api-key" \
-  -d '{
-    "model": "[Claude] claude-sonnet-4.5",
-    "messages": [
-      {"role": "user", "content": "Hello"}
-    ]
-  }'
-```
-
-3. **Specify provider using model prefix**:
-- `[Kiro]` - Access Claude models using Kiro API
-- `[Claude]` - Use official Claude API
-- `[Gemini CLI]` - Access via Gemini CLI OAuth
-- `[OpenAI]` - Use official OpenAI API
-- `[Qwen CLI]` - Access via Qwen OAuth
 
 ---
 
@@ -394,12 +377,13 @@ This project supports flexible proxy configuration, allowing you to configure a 
    ```json
    {
      "PROXY_URL": "http://127.0.0.1:7890",
-     "PROXY_ENABLED_PROVIDERS": [
-       "gemini-cli-oauth",
-       "gemini-antigravity",
-       "claude-kiro-oauth"
-     ]
-   }
+      "PROXY_ENABLED_PROVIDERS": [
+        "gemini-cli-oauth",
+        "gemini-antigravity",
+        "claude-kiro-oauth",
+        "grok-custom"
+      ]
+}
    ```
 
 3. **Provider-Specific Proxied Endpoints**: Some providers (like OpenAI, Claude) support configuring proxied API endpoints
@@ -517,6 +501,38 @@ When all accounts under a Provider Type (e.g., `gemini-cli-oauth`) are exhausted
 - Fallback only occurs between protocol-compatible types (e.g., between `gemini-*`, between `claude-*`)
 - The system automatically checks if the target Provider Type supports the requested model
 
+#### 5. TLS Sidecar (Bypass 403/Cloudflare)
+
+For services like Grok that strictly validate TLS fingerprints (JA3/JA4), this project integrates a Sidecar proxy based on Go uTLS, which effectively solves 403 Forbidden errors by simulating browser TLS features.
+
+**Configuration Instructions**:
+
+1.  **Compile the Binary**:
+    Since TLS simulation requires Go language support, you need to compile the sidecar first:
+    ```bash
+    cd tls-sidecar
+    go build -o tls-sidecar
+    ```
+    *Windows users, after compiling, ensure the generated `tls-sidecar.exe` is located in the `tls-sidecar/` or the root directory.*
+
+2.  **Enable Configuration**:
+    Enable **TLS Sidecar** in the "Configuration" page of the Web UI, or modify `configs/config.json`:
+    ```json
+    {
+      "TLS_SIDECAR_ENABLED": true,
+      "TLS_SIDECAR_PORT": 9090
+    }
+    ```
+
+3.  **How It Works**:
+    - When enabled, the system automatically starts and manages the Go process.
+    - Requests for specific providers (like Grok) are automatically routed to the Sidecar.
+    - The Sidecar uses the latest Chrome fingerprint for TLS handshakes and supports automatic HTTP/2 negotiation.
+
+**Notes**:
+- Local running requires a Go environment (1.20+).
+- **Docker Users**: The image already includes the pre-compiled binary; just enable it in the configuration, no manual compilation required.
+
 </details>
 
 ---
@@ -532,7 +548,7 @@ When all accounts under a Provider Type (e.g., `gemini-cli-oauth`) are exhausted
 
 **Solutions**:
 - **Check Network Connection**: Ensure you can access Google, Alibaba Cloud, and other services normally
-- **Check Port Occupation**: OAuth callbacks require specific ports (Gemini: 8085, Antigravity: 8086, iFlow: 8087, Codex: 1455, Kiro: 19876-19880), ensure these ports are not occupied
+- **Check Port Occupation**: OAuth callbacks require specific ports (Gemini: 8085, Antigravity: 8086, Codex: 1455, Kiro: 19876-19880), ensure these ports are not occupied
 - **Clear Browser Cache**: Try using incognito mode or clearing browser cache and retry
 - **Check Firewall Settings**: Ensure the firewall allows access to local callback ports
 - **Docker Users**: Ensure all OAuth callback ports are correctly mapped
@@ -626,10 +642,8 @@ Or modify the port configuration in `configs/config.json` to use a different por
 
 ### 10. API Returns 404
 
-**Problem Description**: When calling API endpoints, it returns 404 Not Found error.
-
 **Solutions**:
-- **Check Endpoint Path**: Ensure you're using the correct endpoint path, such as `/v1/chat/completions`, `/ollama/api/chat`, etc.
+- **Check Endpoint Path**: Ensure you're using the correct endpoint path, such as `/v1/chat/completions` etc.
 - **Check Client Auto-completion**: Some clients (like Cherry-Studio, NextChat) automatically append paths (like `/v1/chat/completions`) after the Base URL, causing path duplication. Check the actual request URL in the console and remove redundant path parts
 - **Check Service Status**: Confirm the service has started normally, visit `http://localhost:3000` to view Web UI
 - **Check Port Configuration**: Ensure requests are sent to the correct port (default 3000)
@@ -660,6 +674,7 @@ Or modify the port configuration in `configs/config.json` to use a different por
 **Problem Description**: API requests return 403 Forbidden error.
 
 **Solutions**:
+- **Enable TLS Sidecar**: For services like Grok, 403 is often due to TLS fingerprint blocking. Please refer to [Advanced Configuration - TLS Sidecar](#5-tls-sidecar-bypass-403cloudflare) to enable and compile the Sidecar.
 - **Check Node Status**: If you see the node status is normal (health check passed) on the "Provider Pools" page in Web UI, you can ignore this error as the system will handle it automatically
 - **Check Account Permissions**: Confirm the account has permission to access the requested model or service
 - **Check API Key Permissions**: Some providers' API Keys may have access scope restrictions; ensure the Key has sufficient permissions

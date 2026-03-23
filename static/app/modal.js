@@ -458,7 +458,7 @@ function renderProviderConfig(provider) {
     baseFields.forEach(fieldKey => {
         const displayLabel = getFieldLabel(fieldKey);
         const value = provider[fieldKey];
-        const displayValue = value !== undefined ? value : '';
+        const displayValue = (value !== undefined && value !== null) ? value : '';
         
         // 查找字段定义以获取 placeholder
         const fieldDef = fieldConfigs.find(f => f.id === fieldKey) || fieldConfigs.find(f => f.id.toUpperCase() === fieldKey.toUpperCase()) || {};
@@ -473,7 +473,7 @@ function renderProviderConfig(provider) {
                            value="${displayValue}"
                            readonly
                            data-config-key="${fieldKey}"
-                           data-config-value="${value || ''}"
+                           data-config-value="${(value !== undefined && value !== null) ? value : ''}"
                            placeholder="${placeholder}">
                 </div>
             `;
@@ -502,7 +502,7 @@ function renderProviderConfig(provider) {
                            value="${displayValue}"
                            readonly
                            data-config-key="${fieldKey}"
-                           data-config-value="${value || ''}"
+                           data-config-value="${(value !== undefined && value !== null) ? value : ''}"
                            placeholder="${placeholder}">
                 </div>
             `;
@@ -521,7 +521,7 @@ function renderProviderConfig(provider) {
         const field1Value = provider[field1Key];
         const field1IsPassword = field1Key.toLowerCase().includes('key') || field1Key.toLowerCase().includes('password');
         const field1IsOAuthFilePath = field1Key.includes('OAUTH_CREDS_FILE_PATH');
-        const field1DisplayValue = field1IsPassword && field1Value ? '••••••••' : (field1Value || '');
+        const field1DisplayValue = field1IsPassword && field1Value ? '••••••••' : ((field1Value !== undefined && field1Value !== null) ? field1Value : '');
         const field1Def = fieldConfigs.find(f => f.id === field1Key) || fieldConfigs.find(f => f.id.toUpperCase() === field1Key.toUpperCase()) || {};
         
         if (field1IsPassword) {
@@ -533,7 +533,7 @@ function renderProviderConfig(provider) {
                                value="${field1DisplayValue}"
                                readonly
                                data-config-key="${field1Key}"
-                               data-config-value="${field1Value || ''}"
+                               data-config-value="${(field1Value !== undefined && field1Value !== null) ? field1Value : ''}"
                                placeholder="${field1Def.placeholder || ''}">
                        <button type="button" class="password-toggle" data-target="${field1Key}">
                             <i class="fas fa-eye"></i>
@@ -550,10 +550,10 @@ function renderProviderConfig(provider) {
                     <div class="file-input-group">
                         <input type="text"
                                id="edit-${provider.uuid}-${field1Key}"
-                               value="${field1Value || ''}"
+                               value="${(field1Value !== undefined && field1Value !== null) ? field1Value : ''}"
                                readonly
                                data-config-key="${field1Key}"
-                               data-config-value="${field1Value || ''}"
+                               data-config-value="${(field1Value !== undefined && field1Value !== null) ? field1Value : ''}"
                                placeholder="${field1Def.placeholder || ''}">
                        <button type="button" class="btn btn-outline upload-btn" data-target="edit-${provider.uuid}-${field1Key}" aria-label="上传文件" disabled>
                             <i class="fas fa-upload"></i>
@@ -570,7 +570,7 @@ function renderProviderConfig(provider) {
                            value="${field1DisplayValue}"
                            readonly
                            data-config-key="${field1Key}"
-                           data-config-value="${field1Value || ''}"
+                           data-config-value="${(field1Value !== undefined && field1Value !== null) ? field1Value : ''}"
                            placeholder="${field1Def.placeholder || ''}">
                 </div>
             `;
@@ -583,7 +583,7 @@ function renderProviderConfig(provider) {
             const field2Value = provider[field2Key];
             const field2IsPassword = field2Key.toLowerCase().includes('key') || field2Key.toLowerCase().includes('password');
             const field2IsOAuthFilePath = field2Key.includes('OAUTH_CREDS_FILE_PATH');
-            const field2DisplayValue = field2IsPassword && field2Value ? '••••••••' : (field2Value || '');
+            const field2DisplayValue = field2IsPassword && field2Value ? '••••••••' : ((field2Value !== undefined && field2Value !== null) ? field2Value : '');
             const field2Def = fieldConfigs.find(f => f.id === field2Key) || fieldConfigs.find(f => f.id.toUpperCase() === field2Key.toUpperCase()) || {};
             
             if (field2IsPassword) {
@@ -595,7 +595,7 @@ function renderProviderConfig(provider) {
                                    value="${field2DisplayValue}"
                                    readonly
                                    data-config-key="${field2Key}"
-                                   data-config-value="${field2Value || ''}"
+                                   data-config-value="${(field2Value !== undefined && field2Value !== null) ? field2Value : ''}"
                                    placeholder="${field2Def.placeholder || ''}">
                             <button type="button" class="password-toggle" data-target="${field2Key}">
                                 <i class="fas fa-eye"></i>
@@ -612,10 +612,10 @@ function renderProviderConfig(provider) {
                         <div class="file-input-group">
                             <input type="text"
                                    id="edit-${provider.uuid}-${field2Key}"
-                                   value="${field2Value || ''}"
+                                   value="${(field2Value !== undefined && field2Value !== null) ? field2Value : ''}"
                                    readonly
                                    data-config-key="${field2Key}"
-                                   data-config-value="${field2Value || ''}"
+                                   data-config-value="${(field2Value !== undefined && field2Value !== null) ? field2Value : ''}"
                                    placeholder="${field2Def.placeholder || ''}">
                             <button type="button" class="btn btn-outline upload-btn" data-target="edit-${provider.uuid}-${field2Key}" aria-label="上传文件" disabled>
                                 <i class="fas fa-upload"></i>
@@ -632,7 +632,7 @@ function renderProviderConfig(provider) {
                                value="${field2DisplayValue}"
                                readonly
                                data-config-key="${field2Key}"
-                               data-config-value="${field2Value || ''}"
+                               data-config-value="${(field2Value !== undefined && field2Value !== null) ? field2Value : ''}"
                                placeholder="${field2Def.placeholder || ''}">
                     </div>
                 `;
@@ -831,10 +831,12 @@ function cancelEdit(uuid, event) {
     // 恢复输入框为只读状态
     configInputs.forEach(input => {
         input.readOnly = true;
-        // 恢复显示为密码格式（如果有的话）
+        const originalValue = input.dataset.configValue;
+        // 恢复原始值
         if (input.type === 'password') {
-            const actualValue = input.dataset.configValue;
-            input.value = actualValue ? '••••••••' : '';
+            input.value = originalValue ? '••••••••' : '';
+        } else {
+            input.value = originalValue || '';
         }
     });
     

@@ -2,8 +2,8 @@ import axios from 'axios';
 import logger from '../../utils/logger.js';
 import * as http from 'http';
 import * as https from 'https';
-import { configureAxiosProxy } from '../../utils/proxy-utils.js';
-import { isRetryableNetworkError } from '../../utils/common.js';
+import { configureAxiosProxy, configureTLSSidecar } from '../../utils/proxy-utils.js';
+import { isRetryableNetworkError, MODEL_PROVIDER } from '../../utils/common.js';
 
 /**
  * ForwardApiService - A provider that forwards requests to a specified API endpoint.
@@ -56,9 +56,13 @@ export class ForwardApiService {
             axiosConfig.proxy = false;
         }
         
-        configureAxiosProxy(axiosConfig, config, 'forward-custom');
+        configureAxiosProxy(axiosConfig, config, MODEL_PROVIDER.FORWARD_API);
         
         this.axiosInstance = axios.create(axiosConfig);
+    }
+
+    _applySidecar(axiosConfig) {
+        return configureTLSSidecar(axiosConfig, this.config, MODEL_PROVIDER.FORWARD_API, this.baseUrl);
     }
 
     async callApi(endpoint, body, isRetry = false, retryCount = 0) {
@@ -66,7 +70,13 @@ export class ForwardApiService {
         const baseDelay = this.config.REQUEST_BASE_DELAY || 1000;
 
         try {
-            const response = await this.axiosInstance.post(endpoint, body);
+            const axiosConfig = {
+                method: 'post',
+                url: endpoint,
+                data: body
+            };
+            this._applySidecar(axiosConfig);
+            const response = await this.axiosInstance.request(axiosConfig);
             return response.data;
         } catch (error) {
             const status = error.response?.status;
@@ -97,9 +107,14 @@ export class ForwardApiService {
         const baseDelay = this.config.REQUEST_BASE_DELAY || 1000;
 
         try {
-            const response = await this.axiosInstance.post(endpoint, body, {
+            const axiosConfig = {
+                method: 'post',
+                url: endpoint,
+                data: body,
                 responseType: 'stream'
-            });
+            };
+            this._applySidecar(axiosConfig);
+            const response = await this.axiosInstance.request(axiosConfig);
 
             const stream = response.data;
             let buffer = '';
@@ -151,6 +166,9 @@ export class ForwardApiService {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
         }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
+        }
 
         // Transparently pass the endpoint if provided in requestBody, otherwise use default
         const endpoint = requestBody.endpoint || '';
@@ -163,6 +181,9 @@ export class ForwardApiService {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
         }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
+        }
 
         const endpoint = requestBody.endpoint || '';
         yield* this.streamApi(endpoint, requestBody);
@@ -170,7 +191,12 @@ export class ForwardApiService {
 
     async listModels() {
         try {
-            const response = await this.axiosInstance.get('/models');
+            const axiosConfig = {
+                method: 'get',
+                url: '/models'
+            };
+            this._applySidecar(axiosConfig);
+            const response = await this.axiosInstance.request(axiosConfig);
             return response.data;
         } catch (error) {
             logger.error(`Error listing Forward models:`, error.message);
@@ -178,4 +204,3 @@ export class ForwardApiService {
         }
     }
 }
-

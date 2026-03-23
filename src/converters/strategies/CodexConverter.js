@@ -55,7 +55,7 @@ export class CodexConverter extends BaseConverter {
     /**
      * 转换流式响应块
      */
-    convertStreamChunk(chunk, targetProtocol, model) {
+    convertStreamChunk(chunk, targetProtocol, model, requestId) {
         switch (targetProtocol) {
             case MODEL_PROTOCOL_PREFIX.OPENAI:
                 return this.toOpenAIStreamChunk(chunk, model);
@@ -64,7 +64,7 @@ export class CodexConverter extends BaseConverter {
             case MODEL_PROTOCOL_PREFIX.GEMINI:
                 return this.toGeminiStreamChunk(chunk, model);
             case MODEL_PROTOCOL_PREFIX.CLAUDE:
-                return this.toClaudeStreamChunk(chunk, model);
+                return this.toClaudeStreamChunk(chunk, model, requestId);
             case MODEL_PROTOCOL_PREFIX.CODEX:
                 return chunk; // Codex to Codex
             default:
@@ -85,6 +85,14 @@ export class CodexConverter extends BaseConverter {
     toOpenAIResponsesToCodexRequest(responsesRequest) {
         let codexRequest = { ...responsesRequest };
     
+        // 保留监控相关字段
+        if (responsesRequest._monitorRequestId) {
+            codexRequest._monitorRequestId = responsesRequest._monitorRequestId;
+        }
+        if (responsesRequest._requestBaseUrl) {
+            codexRequest._requestBaseUrl = responsesRequest._requestBaseUrl;
+        }
+
         // 处理 input 字段，如果它是字符串，则转换为消息数组
         if (codexRequest.input && typeof codexRequest.input === 'string') {
             const inputText = codexRequest.input;
@@ -103,26 +111,34 @@ export class CodexConverter extends BaseConverter {
         codexRequest.store = false;
         codexRequest.parallel_tool_calls = true;
         codexRequest.include = ['reasoning.encrypted_content'];
+        codexRequest.service_tier = responsesRequest.service_tier || 'default';
+        if (codexRequest.service_tier !== 'priority') {
+            delete codexRequest.service_tier;
+        }
     
         // 删除Codex不支持的字段
         delete codexRequest.max_output_tokens;
         delete codexRequest.max_completion_tokens;
         delete codexRequest.temperature;
         delete codexRequest.top_p;
-        delete codexRequest.service_tier;
         delete codexRequest.user;
-        delete codexRequest.reasoning;
         
         // 添加 reasoning 配置
         codexRequest.reasoning = {
-          "effort": "medium",
-          "summary": "auto"
+          "effort": responsesRequest.reasoning_effort || responsesRequest.reasoning?.effort || "medium",
+          "summary": responsesRequest.reasoning?.summary || "auto"
         };
         
     
         // 确保 input 数组中的每个项都有 type: "message"，并将系统角色转换为开发者角色
         if (codexRequest.input && Array.isArray(codexRequest.input)) {
-            codexRequest.input = codexRequest.input.map(item => {
+            codexRequest.input = codexRequest.input.filter(item => {
+                // 如果 instructions 已存在，过滤掉 input 中的 system/developer 消息以避免重复
+                if (codexRequest.instructions && (item.role === 'system' || item.role === 'developer')) {
+                    return false;
+                }
+                return true;
+            }).map(item => {
                 // 如果没有 type 或者 type 不是 message，则添加 type: "message"
                 if (!item.type || item.type !== 'message') {
                     item = { type: "message", ...item };
@@ -150,17 +166,30 @@ export class CodexConverter extends BaseConverter {
         const codexRequest = {
             model: data.model,
             instructions: this.buildInstructions(data),
-            input: this.convertMessages(data.messages || []),
+            input: this.convertMessages((data.messages || []).filter(m => m.role !== 'system' && m.role !== 'developer')),
             stream: true,
             store: false,
             metadata: data.metadata || {},
             reasoning: {
-                effort: data.reasoning_effort || 'medium',
-                summary: 'auto'
+                effort: data.reasoning_effort || data.reasoning?.effort || 'medium',
+                summary: data.reasoning?.summary || 'auto'
             },
             parallel_tool_calls: true,
             include: ['reasoning.encrypted_content']
         };
+
+        // 保留监控相关字段
+        if (data._monitorRequestId) {
+            codexRequest._monitorRequestId = data._monitorRequestId;
+        }
+        if (data._requestBaseUrl) {
+            codexRequest._requestBaseUrl = data._requestBaseUrl;
+        }
+
+        codexRequest.service_tier = data.service_tier || 'default';
+        if (codexRequest.service_tier !== 'priority') {
+            delete codexRequest.service_tier;
+        }
 
         // 处理 OpenAI Responses 特有的 instructions 和 input 字段（如果存在）
         if (data.instructions && !codexRequest.instructions) {
@@ -170,7 +199,7 @@ export class CodexConverter extends BaseConverter {
         if (data.input && Array.isArray(data.input) && codexRequest.input.length === 0) {
              // 如果是 OpenAI Responses 格式的 input
              for (const item of data.input) {
-                if (item.type === 'message') {
+                if (item.type === 'message' && item.role !== 'system' && item.role !== 'developer') {
                     codexRequest.input.push({
                         type: 'message',
                         role: item.role === 'system' ? 'developer' : item.role,
@@ -1124,52 +1153,125 @@ export class CodexConverter extends BaseConverter {
     /**
      * Codex → Claude 流式响应转换
      */
-    toClaudeStreamChunk(chunk, model) {
+    toClaudeStreamChunk(chunk, model, requestId) {
         const type = chunk.type;
-        const resId = chunk.response?.id || 'default';
-        
-        if (!this.streamParams.has(resId)) {
-            this.streamParams.set(resId, {
+
+        // 使用 requestId 作为流状态的隔离 key（并发安全）。
+        // 每个请求在 handleStreamRequest 中生成唯一 requestId，
+        // 确保同一单例 converter 上的并发流状态完全独立。
+        const stateKey = requestId || chunk.response?.id || 'default';
+
+        // response.created 携带 response.id，用它来初始化该请求的流状态
+        if (type === 'response.created') {
+            const resId = chunk.response.id;
+            this.streamParams.set(stateKey, {
                 model: model,
                 createdAt: Math.floor(Date.now() / 1000),
                 responseID: resId,
-                blockIndex: 0
+                blockIndex: 0,
+                blockStarted: false,
+                currentBlockType: null,
             });
-        }
-        const state = this.streamParams.get(resId);
-
-        if (type === 'response.created') {
-            state.responseID = chunk.response.id;
+            const state = this.streamParams.get(stateKey);
             return {
                 type: "message_start",
                 message: {
                     id: state.responseID,
                     type: "message",
                     role: "assistant",
+                    content: [],
                     model: state.model,
                     usage: { input_tokens: 0, output_tokens: 0 }
                 }
             };
         }
 
+        if (!this.streamParams.has(stateKey)) {
+            // 如果还没有状态（比如没有收到 response.created 就收到了其他事件），
+            // 用 chunk 中能拿到的信息初始化
+            this.streamParams.set(stateKey, {
+                model: model,
+                createdAt: Math.floor(Date.now() / 1000),
+                responseID: chunk.response?.id || stateKey,
+                blockIndex: 0,
+                blockStarted: false,
+                currentBlockType: null,
+            });
+        }
+        const state = this.streamParams.get(stateKey);
+
+        // response.output_item.added 不产生 Claude 输出
+        if (type === 'response.output_item.added') {
+            return null;
+        }
+
+        if (type === 'response.created') {
+            // 已在上方处理，不应到达此处
+            return null;
+        }
+
         if (type === 'response.reasoning_summary_text.delta') {
-            return {
+            const events = [];
+            // If switching from a different block type, close the previous block first
+            if (state.blockStarted && state.currentBlockType !== 'thinking') {
+                events.push({ type: "content_block_stop", index: state.blockIndex });
+                state.blockIndex++;
+                state.blockStarted = false;
+            }
+            // Emit content_block_start on first delta for this thinking block
+            if (!state.blockStarted) {
+                events.push({
+                    type: "content_block_start",
+                    index: state.blockIndex,
+                    content_block: { type: "thinking", thinking: "" }
+                });
+                state.blockStarted = true;
+                state.currentBlockType = 'thinking';
+            }
+            events.push({
                 type: "content_block_delta",
                 index: state.blockIndex,
                 delta: { type: "thinking_delta", thinking: chunk.delta }
-            };
+            });
+            return events;
         }
 
         if (type === 'response.output_text.delta') {
-            return {
+            const events = [];
+            // If switching from a different block type, close the previous block first
+            if (state.blockStarted && state.currentBlockType !== 'text') {
+                events.push({ type: "content_block_stop", index: state.blockIndex });
+                state.blockIndex++;
+                state.blockStarted = false;
+            }
+            // Emit content_block_start on first delta for this text block
+            if (!state.blockStarted) {
+                events.push({
+                    type: "content_block_start",
+                    index: state.blockIndex,
+                    content_block: { type: "text", text: "" }
+                });
+                state.blockStarted = true;
+                state.currentBlockType = 'text';
+            }
+            events.push({
                 type: "content_block_delta",
                 index: state.blockIndex,
                 delta: { type: "text_delta", text: chunk.delta }
-            };
+            });
+            return events;
         }
 
         if (type === 'response.output_item.done' && chunk.item?.type === 'function_call') {
-            const events = [
+            const events = [];
+            // Close any open text/thinking block before tool_use
+            if (state.blockStarted) {
+                events.push({ type: "content_block_stop", index: state.blockIndex });
+                state.blockIndex++;
+                state.blockStarted = false;
+                state.currentBlockType = null;
+            }
+            events.push(
                 {
                     type: "content_block_start",
                     index: state.blockIndex,
@@ -1192,13 +1294,18 @@ export class CodexConverter extends BaseConverter {
                     type: "content_block_stop",
                     index: state.blockIndex
                 }
-            ];
+            );
             state.blockIndex++;
             return events;
         }
 
         if (type === 'response.completed') {
-            const events = [
+            const events = [];
+            // Close any open content block before ending the message
+            if (state.blockStarted) {
+                events.push({ type: "content_block_stop", index: state.blockIndex });
+            }
+            events.push(
                 {
                     type: "message_delta",
                     delta: { stop_reason: "end_turn" },
@@ -1208,8 +1315,9 @@ export class CodexConverter extends BaseConverter {
                     }
                 },
                 { type: "message_stop" }
-            ];
-            this.streamParams.delete(resId);
+            );
+            // 清理该请求的流状态
+            this.streamParams.delete(stateKey);
             return events;
         }
 

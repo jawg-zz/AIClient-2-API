@@ -574,7 +574,7 @@ export class CodexApiServiceAdapter extends ApiServiceAdapter {
         }
         if (this.isExpiryDateNear()) {
             logger.info(`[Codex] Expiry date is near, refreshing token...`);
-            await this.codexApiService.refreshAccessToken();
+            await this.codexApiService.initializeAuth(true);
         }
         return Promise.resolve();
     }
@@ -584,7 +584,7 @@ export class CodexApiServiceAdapter extends ApiServiceAdapter {
             await this.codexApiService.initialize();
         }
         logger.info(`[Codex] Force refreshing token...`);
-        return this.codexApiService.refreshAccessToken();
+        return this.codexApiService.initializeAuth(true);
     }
 
     isExpiryDateNear() {
@@ -696,7 +696,7 @@ registerAdapter(MODEL_PROVIDER.ANTIGRAVITY, AntigravityApiServiceAdapter);
 registerAdapter(MODEL_PROVIDER.CLAUDE_CUSTOM, ClaudeApiServiceAdapter);
 registerAdapter(MODEL_PROVIDER.KIRO_API, KiroApiServiceAdapter);
 registerAdapter(MODEL_PROVIDER.QWEN_API, QwenApiServiceAdapter);
-registerAdapter(MODEL_PROVIDER.IFLOW_API, IFlowApiServiceAdapter);
+// registerAdapter(MODEL_PROVIDER.IFLOW_API, IFlowApiServiceAdapter);
 registerAdapter(MODEL_PROVIDER.CODEX_API, CodexApiServiceAdapter);
 registerAdapter(MODEL_PROVIDER.GROK_CUSTOM, GrokApiServiceAdapter);
 // registerAdapter(MODEL_PROVIDER.FORWARD_API, ForwardApiServiceAdapter);

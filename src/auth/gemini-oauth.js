@@ -42,10 +42,42 @@ const activeServers = new Map();
  * 生成 HTML 响应页面
  * @param {boolean} isSuccess - 是否成功
  * @param {string} message - 显示消息
+ * @param {string|null} provider - 提供商标识
  * @returns {string} HTML 内容
  */
-function generateResponsePage(isSuccess, message) {
+function generateResponsePage(isSuccess, message, provider = null) {
     const title = isSuccess ? '授权成功！' : '授权失败';
+    const countdownHtml = isSuccess ? `
+        <p>此窗口将在 <span id="countdown" style="font-weight: bold; color: #2196f3;">10</span> 秒后自动关闭。</p>
+        <script>
+            const notifyOpener = () => {
+                try {
+                    if (window.opener && !window.opener.closed) {
+                        window.opener.postMessage({
+                            type: 'oauth-popup-complete',
+                            provider: ${JSON.stringify(provider)},
+                            success: true
+                        }, window.location.origin);
+                    }
+                } catch (e) {}
+            };
+            notifyOpener();
+            setTimeout(() => {
+                try {
+                    window.close();
+                } catch (e) {}
+            }, 300);
+            let countdown = 10;
+            const timer = setInterval(() => {
+                countdown--;
+                const el = document.getElementById('countdown');
+                if (el) el.textContent = countdown;
+                if (countdown <= 0) {
+                    clearInterval(timer);
+                    window.close();
+                }
+            }, 1000);
+        </script>` : '';
     
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -53,11 +85,34 @@ function generateResponsePage(isSuccess, message) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${title}</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f5f5f5;
+        }
+        .container {
+            text-align: center;
+            padding: 2rem;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            max-width: 400px;
+            width: 90%;
+        }
+        h1 { color: ${isSuccess ? '#4caf50' : '#f44336'}; margin-top: 0; }
+        p { color: #666; line-height: 1.6; }
+    </style>
 </head>
 <body>
     <div class="container">
-        <h1>${title}</h1>
+        <h1>${isSuccess ? '✅' : '❌'} ${title}</h1>
         <p>${message}</p>
+        ${countdownHtml}
     </div>
 </body>
 </html>`;
@@ -72,26 +127,38 @@ async function closeActiveServer(provider, port = null) {
     // 1. 关闭该提供商之前的所有服务器
     const existing = activeServers.get(provider);
     if (existing) {
-        await new Promise((resolve) => {
-            existing.server.close(() => {
-                activeServers.delete(provider);
-                logger.info(`[OAuth] 已关闭提供商 ${provider} 在端口 ${existing.port} 上的旧服务器`);
-                resolve();
+        // 清理轮询定时器
+        if (existing.pollTimer) {
+            clearInterval(existing.pollTimer);
+            existing.pollTimer = null;
+        }
+
+        try {
+            const closePromise = new Promise((resolve, reject) => {
+                existing.server.close((err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
             });
-        });
+
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('Server close timeout after 2s')), 2000);
+            });
+
+            await Promise.race([closePromise, timeoutPromise]);
+            logger.info(`[OAuth] 已关闭提供商 ${provider} 在端口 ${existing.port} 上的旧服务器`);
+        } catch (error) {
+            logger.warn(`[OAuth] 关闭提供商 ${provider} 服务器失败或超时: ${error.message}`);
+        } finally {
+            activeServers.delete(provider);
+        }
     }
 
     // 2. 如果指定了端口，检查是否有其他提供商占用了该端口
     if (port) {
         for (const [p, info] of activeServers.entries()) {
             if (info.port === port) {
-                await new Promise((resolve) => {
-                    info.server.close(() => {
-                        activeServers.delete(p);
-                        logger.info(`[OAuth] 已关闭端口 ${port} 上被占用（提供商: ${p}）的旧服务器`);
-                        resolve();
-                    });
-                });
+                await closeActiveServer(p);
             }
         }
     }
@@ -112,6 +179,18 @@ async function createOAuthCallbackServer(config, redirectUri, authClient, credPa
     await closeActiveServer(provider, port);
     
     return new Promise((resolve, reject) => {
+        let pollCount = 0;
+        const maxPollCount = 100; // 约 5 分钟 (100 * 3s = 300s)
+        const pollInterval = 3000;
+        let pollTimer = null;
+
+        const clearPollTimer = () => {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+        };
+
         const server = http.createServer(async (req, res) => {
             try {
                 const url = new URL(req.url, redirectUri);
@@ -119,6 +198,7 @@ async function createOAuthCallbackServer(config, redirectUri, authClient, credPa
                 const errorParam = url.searchParams.get('error');
                 
                 if (code) {
+                    clearPollTimer();
                     logger.info(`${config.logPrefix} 收到来自 Google 的成功回调: ${req.url}`);
                     
                     try {
@@ -156,22 +236,38 @@ async function createOAuthCallbackServer(config, redirectUri, authClient, credPa
                         });
                         
                         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-                        res.end(generateResponsePage(true, '您可以关闭此页面'));
+                        res.end(generateResponsePage(true, '您可以关闭此页面', provider));
                     } catch (tokenError) {
                         logger.error(`${config.logPrefix} 获取令牌失败:`, tokenError);
+                        
+                        // 广播授权失败事件
+                        broadcastEvent('oauth_error', {
+                            provider: provider,
+                            error: tokenError.message,
+                            timestamp: new Date().toISOString()
+                        });
+                        
                         res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
-                        res.end(generateResponsePage(false, `获取令牌失败: ${tokenError.message}`));
+                        res.end(generateResponsePage(false, `获取令牌失败: ${tokenError.message}`, provider));
                     } finally {
                         server.close(() => {
                             activeServers.delete(provider);
                         });
                     }
                 } else if (errorParam) {
+                    clearPollTimer();
                     const errorMessage = `授权失败。Google 返回错误: ${errorParam}`;
                     logger.error(`${config.logPrefix}`, errorMessage);
                     
+                    // 广播授权失败事件
+                    broadcastEvent('oauth_error', {
+                        provider: provider,
+                        error: errorMessage,
+                        timestamp: new Date().toISOString()
+                    });
+                    
                     res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-                    res.end(generateResponsePage(false, errorMessage));
+                    res.end(generateResponsePage(false, errorMessage, provider));
                     server.close(() => {
                         activeServers.delete(provider);
                     });
@@ -181,9 +277,10 @@ async function createOAuthCallbackServer(config, redirectUri, authClient, credPa
                     res.end();
                 }
             } catch (error) {
+                clearPollTimer();
                 logger.error(`${config.logPrefix} 处理回调时出错:`, error);
                 res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
-                res.end(generateResponsePage(false, `服务器错误: ${error.message}`));
+                res.end(generateResponsePage(false, `服务器错误: ${error.message}`, provider));
                 
                 if (server.listening) {
                     server.close(() => {
@@ -194,6 +291,7 @@ async function createOAuthCallbackServer(config, redirectUri, authClient, credPa
         });
         
         server.on('error', (err) => {
+            clearPollTimer();
             if (err.code === 'EADDRINUSE') {
                 logger.error(`${config.logPrefix} 端口 ${port} 已被占用`);
                 reject(new Error(`端口 ${port} 已被占用`));
@@ -206,7 +304,24 @@ async function createOAuthCallbackServer(config, redirectUri, authClient, credPa
         const host = '0.0.0.0';
         server.listen(port, host, () => {
             logger.info(`${config.logPrefix} OAuth 回调服务器已启动于 ${host}:${port}`);
-            activeServers.set(provider, { server, port });
+            
+            // 启动轮询日志
+            pollTimer = setInterval(() => {
+                pollCount++;
+                if (pollCount <= maxPollCount) {
+                    logger.info(`${config.logPrefix} Waiting for callback... (${pollCount}/${maxPollCount})`);
+                } else {
+                    clearPollTimer();
+                    logger.warn(`${config.logPrefix} Polling timeout, closing server...`);
+                    if (server.listening) {
+                        server.close(() => {
+                            activeServers.delete(provider);
+                        });
+                    }
+                }
+            }, pollInterval);
+
+            activeServers.set(provider, { server, port, pollTimer });
             resolve(server);
         });
     });

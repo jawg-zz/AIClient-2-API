@@ -13,10 +13,78 @@ import { MODEL_PROTOCOL_PREFIX } from '../../utils/common.js';
  * 实现Grok协议到其他协议的转换
  */
 export class GrokConverter extends BaseConverter {
+    // 静态属性，确保所有实例共享最新的基础 URL 和 UUID 配置
+    static sharedRequestBaseUrl = "";
+    static sharedUuid = null;
+
     constructor() {
         super('grok');
         // 用于跟踪每个请求的状态
         this.requestStates = new Map();
+    }
+
+    /**
+     * 设置请求的基础 URL
+     */
+    setRequestBaseUrl(baseUrl) {
+        if (baseUrl) {
+            GrokConverter.sharedRequestBaseUrl = baseUrl;
+        }
+    }
+
+    /**
+     * 设置账号的 UUID
+     */
+    setUuid(uuid) {
+        if (uuid) {
+            GrokConverter.sharedUuid = uuid;
+        }
+    }
+
+    /**
+     * 为 assets.grok.com 域名的资源 URL 添加 uuid 参数，并转换为本地代理 URL
+     */
+    _appendSsoToken(url, state = null) {
+        const requestBaseUrl = state?.requestBaseUrl || GrokConverter.sharedRequestBaseUrl;
+        const uuid = state?.uuid || GrokConverter.sharedUuid;
+
+        if (!url || !uuid) return url;
+        
+        // 检查是否为 assets.grok.com 域名或相对路径
+        const isGrokAsset = url.includes('assets.grok.com') || (!url.startsWith('http') && !url.startsWith('data:'));
+        
+        if (!isGrokAsset) return url;
+
+        // 构造完整的原始 URL
+        let originalUrl = url;
+        if (!url.startsWith('http')) {
+            originalUrl = `https://assets.grok.com${url.startsWith('/') ? '' : '/'}${url}`;
+        }
+
+        // 返回本地代理接口 URL
+        // 使用 uuid 以提高安全性，防止 token 泄露在链接中
+        const authParam = `uuid=${encodeURIComponent(uuid)}`;
+
+        const proxyPath = `/api/grok/assets?url=${encodeURIComponent(originalUrl)}&${authParam}`;
+        if (requestBaseUrl) {
+            return `${requestBaseUrl}${proxyPath}`;
+        }
+        return proxyPath;
+    }
+
+    /**
+     * 在文本中查找并替换所有 assets.grok.com 的资源链接为绝对代理链接
+     */
+    _processGrokAssetsInText(text, state = null) {
+        const uuid = state?.uuid || GrokConverter.sharedUuid;
+        if (!text || !uuid) return text;
+        
+        // 更宽松的正则匹配 assets.grok.com 的 URL
+        const grokUrlRegex = /https?:\/\/assets\.grok\.com\/[^\s\)\"\'\>]+/g;
+        
+        return text.replace(grokUrlRegex, (url) => {
+            return this._appendSsoToken(url, state);
+        });
     }
 
     /**
@@ -35,7 +103,10 @@ export class GrokConverter extends BaseConverter {
                 content_buffer: "", // 用于缓存内容以解析工具调用
                 has_tool_call: false,
                 rollout_id: "",
-                in_tool_call: false // 是否处于 <tool_call> 块内
+                in_tool_call: false, // 是否处于 <tool_call> 块内
+                requestBaseUrl: "",
+                uuid: null,
+                pending_text_buffer: "" // 用于处理流式输出中被截断的 URL
             });
         }
         return this.requestStates.get(requestId);
@@ -173,7 +244,10 @@ export class GrokConverter extends BaseConverter {
      * 转换请求
      */
     convertRequest(data, targetProtocol) {
-        return data;
+        switch (targetProtocol) {
+            default:
+                return data;
+        }
     }
 
     /**
@@ -183,6 +257,12 @@ export class GrokConverter extends BaseConverter {
         switch (targetProtocol) {
             case MODEL_PROTOCOL_PREFIX.OPENAI:
                 return this.toOpenAIResponse(data, model);
+            case MODEL_PROTOCOL_PREFIX.GEMINI:
+                return this.toGeminiResponse(data, model);
+            case MODEL_PROTOCOL_PREFIX.OPENAI_RESPONSES:
+                return this.toOpenAIResponsesResponse(data, model);
+            case MODEL_PROTOCOL_PREFIX.CODEX:
+                return this.toCodexResponse(data, model);
             default:
                 return data;
         }
@@ -195,6 +275,12 @@ export class GrokConverter extends BaseConverter {
         switch (targetProtocol) {
             case MODEL_PROTOCOL_PREFIX.OPENAI:
                 return this.toOpenAIStreamChunk(chunk, model);
+            case MODEL_PROTOCOL_PREFIX.GEMINI:
+                return this.toGeminiStreamChunk(chunk, model);
+            case MODEL_PROTOCOL_PREFIX.OPENAI_RESPONSES:
+                return this.toOpenAIResponsesStreamChunk(chunk, model);
+            case MODEL_PROTOCOL_PREFIX.CODEX:
+                return this.toCodexStreamChunk(chunk, model);
             default:
                 return chunk;
         }
@@ -204,7 +290,14 @@ export class GrokConverter extends BaseConverter {
      * 转换模型列表
      */
     convertModelList(data, targetProtocol) {
-        return data;
+        switch (targetProtocol) {
+            case MODEL_PROTOCOL_PREFIX.OPENAI:
+                return this.toOpenAIModelList(data);
+            case MODEL_PROTOCOL_PREFIX.GEMINI:
+                return this.toGeminiModelList(data);
+            default:
+                return data;
+        }
     }
 
     /**
@@ -272,18 +365,19 @@ export class GrokConverter extends BaseConverter {
     /**
      * 渲染图片为 Markdown
      */
-    _renderImage(url, imageId = "image") {
+    _renderImage(url, imageId = "image", state = null) {
         let finalUrl = url;
         if (!url.startsWith('http')) {
             finalUrl = `https://assets.grok.com${url.startsWith('/') ? '' : '/'}${url}`;
         }
+        finalUrl = this._appendSsoToken(finalUrl, state);
         return `![${imageId}](${finalUrl})`;
     }
 
     /**
      * 渲染视频为 Markdown/HTML (render_video)
      */
-    _renderVideo(videoUrl, thumbnailImageUrl = "") {
+    _renderVideo(videoUrl, thumbnailImageUrl = "", state = null) {
         let finalVideoUrl = videoUrl;
         if (!videoUrl.startsWith('http')) {
             finalVideoUrl = `https://assets.grok.com${videoUrl.startsWith('/') ? '' : '/'}${videoUrl}`;
@@ -294,7 +388,8 @@ export class GrokConverter extends BaseConverter {
             finalThumbUrl = `https://assets.grok.com${thumbnailImageUrl.startsWith('/') ? '' : '/'}${thumbnailImageUrl}`;
         }
 
-        return `\n[![video](${finalThumbUrl || 'https://assets.grok.com/favicon.ico'})](${finalVideoUrl})\n[Play Video](${finalVideoUrl})\n`;
+        const defaultThumb = 'https://assets.grok.com/favicon.ico';
+        return `\n[![video](${finalThumbUrl || defaultThumb})](${finalVideoUrl})\n[Play Video](${finalVideoUrl})\n`;
     }
 
     /**
@@ -376,22 +471,31 @@ export class GrokConverter extends BaseConverter {
         const responseId = grokResponse.responseId || `chatcmpl-${uuidv4()}`;
         let content = grokResponse.message || "";
         const modelHash = grokResponse.llmInfo?.modelHash || "";
+        
+        const state = this._getState(this._formatResponseId(responseId));
+        if (grokResponse._requestBaseUrl) {
+            state.requestBaseUrl = grokResponse._requestBaseUrl;
+        }
+        if (grokResponse._uuid) {
+            state.uuid = grokResponse._uuid;
+        }
 
-        // 过滤内容
+        // 过滤内容并处理其中的 Grok 资源链接
         content = this._filterToken(content, responseId);
+        content = this._processGrokAssetsInText(content, state);
 
         // 收集图片并追加
         const imageUrls = this._collectImages(grokResponse);
         if (imageUrls.length > 0) {
             content += "\n";
             for (const url of imageUrls) {
-                content += this._renderImage(url) + "\n";
+                content += this._renderImage(url, "image", state) + "\n";
             }
         }
 
         // 处理视频 (非流式模式)
         if (grokResponse.finalVideoUrl) {
-            content += this._renderVideo(grokResponse.finalVideoUrl, grokResponse.finalThumbnailUrl);
+            content += this._renderVideo(grokResponse.finalVideoUrl, grokResponse.finalThumbnailUrl, state);
         }
 
         // 解析工具调用
@@ -444,6 +548,14 @@ export class GrokConverter extends BaseConverter {
         const responseId = this._formatResponseId(rawResponseId);
         const state = this._getState(responseId);
         
+        // 从响应块中同步 uuid 和基础 URL
+        if (resp._requestBaseUrl) {
+            state.requestBaseUrl = resp._requestBaseUrl;
+        }
+        if (resp._uuid) {
+            state.uuid = resp._uuid;
+        }
+
         if (resp.llmInfo?.modelHash && !state.fingerprint) {
             state.fingerprint = resp.llmInfo.modelHash;
         }
@@ -473,12 +585,11 @@ export class GrokConverter extends BaseConverter {
         // 处理结束标志
         if (resp.isDone) {
             let finalContent = "";
-            /*
-            if (state.think_opened) {
-                finalContent += "\n</think>\n";
-                state.think_opened = false;
+            // 处理剩余的缓冲区
+            if (state.pending_text_buffer) {
+                finalContent += this._processGrokAssetsInText(state.pending_text_buffer, state);
+                state.pending_text_buffer = "";
             }
-            */
 
             // 处理 buffer 中的工具调用
             const { text, toolCalls } = this.parseToolCalls(state.content_buffer);
@@ -493,7 +604,7 @@ export class GrokConverter extends BaseConverter {
                     choices: [{
                         index: 0,
                         delta: { 
-                            content: ((/* finalContent + */ "") + (text || "")).trim() || null,
+                            content: (finalContent + (text || "")).trim() || null,
                             tool_calls: toolCalls 
                         },
                         finish_reason: "tool_calls"
@@ -508,7 +619,7 @@ export class GrokConverter extends BaseConverter {
                     system_fingerprint: state.fingerprint,
                     choices: [{
                         index: 0,
-                        delta: { content: /* finalContent || */ null },
+                        delta: { content: finalContent || null },
                         finish_reason: "stop"
                     }]
                 });
@@ -558,7 +669,7 @@ export class GrokConverter extends BaseConverter {
                 }
                 */
                 state.video_think_active = false;
-                deltaContent += this._renderVideo(vid.videoUrl, vid.thumbnailImageUrl);
+                deltaContent += this._renderVideo(vid.videoUrl, vid.thumbnailImageUrl, state);
             }
         }
 
@@ -576,7 +687,7 @@ export class GrokConverter extends BaseConverter {
 
             const imageUrls = this._collectImages(mr);
             for (const url of imageUrls) {
-                deltaContent += this._renderImage(url) + "\n";
+                deltaContent += this._renderImage(url, "image", state) + "\n";
             }
 
             if (mr.metadata?.llm_info?.modelHash) {
@@ -590,9 +701,14 @@ export class GrokConverter extends BaseConverter {
             if (card.jsonData) {
                 try {
                     const cardData = JSON.parse(card.jsonData);
-                    const original = cardData.image?.original;
+                    let original = cardData.image?.original;
                     const title = cardData.image?.title || "image";
                     if (original) {
+                        // 确保是绝对路径
+                        if (!original.startsWith('http')) {
+                            original = `https://assets.grok.com${original.startsWith('/') ? '' : '/'}${original}`;
+                        }
+                        original = this._appendSsoToken(original, state);
                         deltaContent += `![${title}](${original})\n`;
                     }
                 } catch (e) {
@@ -611,25 +727,54 @@ export class GrokConverter extends BaseConverter {
             if (inThink) {
                 deltaReasoning += filtered;
             } else {
-                // 工具调用抑制逻辑：不向客户端输出 <tool_call> 块及其内容
-                let outputToken = filtered;
+                // 将新 token 加入待处理缓冲区，解决 URL 被截断的问题
+                state.pending_text_buffer += filtered;
                 
-                // 简单的状态切换检测
-                if (outputToken.includes('<tool_call>')) {
-                    state.in_tool_call = true;
-                    state.has_tool_call = true;
-                    // 移除标签之后的部分（如果有）
-                    outputToken = outputToken.split('<tool_call>')[0];
-                } else if (state.in_tool_call && outputToken.includes('</tool_call>')) {
-                    state.in_tool_call = false;
-                    // 只保留标签之后的部分
-                    outputToken = outputToken.split('</tool_call>')[1] || "";
-                } else if (state.in_tool_call) {
-                    // 处于块内，完全抑制
-                    outputToken = "";
+                let outputFromBuffer = "";
+                
+                // 启发式逻辑：检查缓冲区是否包含完整的 URL
+                if (state.pending_text_buffer.includes("https://assets.grok.com")) {
+                    const lastUrlIndex = state.pending_text_buffer.lastIndexOf("https://assets.grok.com");
+                    const textAfterUrl = state.pending_text_buffer.slice(lastUrlIndex);
+                    
+                    // 检查 URL 是否结束（空格、右括号、引号、换行、大于号等）
+                    const terminatorMatch = textAfterUrl.match(/[\s\)\"\'\>\n]/);
+                    if (terminatorMatch) {
+                        // URL 已结束，可以安全地处理并输出缓冲区
+                        outputFromBuffer = this._processGrokAssetsInText(state.pending_text_buffer, state);
+                        state.pending_text_buffer = "";
+                    } else if (state.pending_text_buffer.length > 1000) {
+                        // 缓冲区过长，强制处理输出，避免过度延迟
+                        outputFromBuffer = this._processGrokAssetsInText(state.pending_text_buffer, state);
+                        state.pending_text_buffer = "";
+                    }
+                } else {
+                    // 不包含 Grok URL，直接输出
+                    outputFromBuffer = state.pending_text_buffer;
+                    state.pending_text_buffer = "";
                 }
 
-                deltaContent += outputToken;
+                if (outputFromBuffer) {
+                    // 工具调用抑制逻辑：不向客户端输出 <tool_call> 块及其内容
+                    let outputToken = outputFromBuffer;
+                    
+                    // 简单的状态切换检测
+                    if (outputToken.includes('<tool_call>')) {
+                        state.in_tool_call = true;
+                        state.has_tool_call = true;
+                        // 移除标签之后的部分（如果有）
+                        outputToken = outputToken.split('<tool_call>')[0];
+                    } else if (state.in_tool_call && outputToken.includes('</tool_call>')) {
+                        state.in_tool_call = false;
+                        // 只保留标签之后的部分
+                        outputToken = outputToken.split('</tool_call>')[1] || "";
+                    } else if (state.in_tool_call) {
+                        // 处于块内，完全抑制
+                        outputToken = "";
+                    }
+
+                    deltaContent += outputToken;
+                }
                 
                 // 将内容加入 buffer 用于最终解析工具调用
                 state.content_buffer += filtered;
@@ -657,5 +802,352 @@ export class GrokConverter extends BaseConverter {
         }
 
         return chunks.length > 0 ? chunks : null;
+    }
+
+    /**
+     * Grok响应 -> Gemini响应
+     */
+    toGeminiResponse(grokResponse, model) {
+        const openaiRes = this.toOpenAIResponse(grokResponse, model);
+        if (!openaiRes) return null;
+
+        const choice = openaiRes.choices[0];
+        const message = choice.message;
+        const parts = [];
+
+        if (message.reasoning_content) {
+            parts.push({ text: message.reasoning_content, thought: true });
+        }
+
+        if (message.content) {
+            parts.push({ text: message.content });
+        }
+
+        if (message.tool_calls) {
+            for (const tc of message.tool_calls) {
+                parts.push({
+                    functionCall: {
+                        name: tc.function.name,
+                        args: typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments
+                    }
+                });
+            }
+        }
+
+        return {
+            candidates: [{
+                content: {
+                    role: 'model',
+                    parts: parts
+                },
+                finishReason: choice.finish_reason === 'tool_calls' ? 'STOP' : (choice.finish_reason === 'length' ? 'MAX_TOKENS' : 'STOP')
+            }],
+            usageMetadata: {
+                promptTokenCount: openaiRes.usage.prompt_tokens,
+                candidatesTokenCount: openaiRes.usage.completion_tokens,
+                totalTokenCount: openaiRes.usage.total_tokens
+            }
+        };
+    }
+
+    /**
+     * Grok流式响应块 -> Gemini流式响应块
+     */
+    toGeminiStreamChunk(grokChunk, model) {
+        const openaiChunks = this.toOpenAIStreamChunk(grokChunk, model);
+        if (!openaiChunks) return null;
+
+        const geminiChunks = [];
+        for (const oachunk of openaiChunks) {
+            const choice = oachunk.choices[0];
+            const delta = choice.delta;
+            const parts = [];
+
+            if (delta.reasoning_content) {
+                parts.push({ text: delta.reasoning_content, thought: true });
+            }
+            if (delta.content) {
+                parts.push({ text: delta.content });
+            }
+            if (delta.tool_calls) {
+                for (const tc of delta.tool_calls) {
+                    parts.push({
+                        functionCall: {
+                            name: tc.function.name,
+                            args: typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments
+                        }
+                    });
+                }
+            }
+
+            if (parts.length > 0 || choice.finish_reason) {
+                const gchunk = {
+                    candidates: [{
+                        content: {
+                            role: 'model',
+                            parts: parts
+                        }
+                    }]
+                };
+                if (choice.finish_reason) {
+                    gchunk.candidates[0].finishReason = choice.finish_reason === 'length' ? 'MAX_TOKENS' : 'STOP';
+                }
+                geminiChunks.push(gchunk);
+            }
+        }
+
+        return geminiChunks.length > 0 ? geminiChunks : null;
+    }
+
+    /**
+     * Grok响应 -> OpenAI Responses响应
+     */
+    toOpenAIResponsesResponse(grokResponse, model) {
+        const openaiRes = this.toOpenAIResponse(grokResponse, model);
+        if (!openaiRes) return null;
+
+        const choice = openaiRes.choices[0];
+        const message = choice.message;
+        const output = [];
+
+        const content = [];
+        if (message.content) {
+            content.push({
+                type: "output_text",
+                text: message.content
+            });
+        }
+
+        output.push({
+            id: `msg_${uuidv4().replace(/-/g, '')}`,
+            type: "message",
+            role: "assistant",
+            status: "completed",
+            content: content
+        });
+
+        if (message.tool_calls) {
+            for (const tc of message.tool_calls) {
+                output.push({
+                    id: tc.id,
+                    type: "function_call",
+                    name: tc.function.name,
+                    arguments: tc.function.arguments,
+                    status: "completed"
+                });
+            }
+        }
+
+        return {
+            id: `resp_${uuidv4().replace(/-/g, '')}`,
+            object: "response",
+            created_at: Math.floor(Date.now() / 1000),
+            status: "completed",
+            model: model,
+            output: output,
+            usage: {
+                input_tokens: openaiRes.usage.prompt_tokens,
+                output_tokens: openaiRes.usage.completion_tokens,
+                total_tokens: openaiRes.usage.total_tokens
+            }
+        };
+    }
+
+    /**
+     * Grok流式响应块 -> OpenAI Responses流式响应块
+     */
+    toOpenAIResponsesStreamChunk(grokChunk, model) {
+        const openaiChunks = this.toOpenAIStreamChunk(grokChunk, model);
+        if (!openaiChunks) return null;
+
+        const events = [];
+        for (const oachunk of openaiChunks) {
+            const choice = oachunk.choices[0];
+            const delta = choice.delta;
+
+            if (delta.role === 'assistant') {
+                events.push({ type: "response.created", response: { id: oachunk.id, model: model } });
+            }
+
+            if (delta.reasoning_content) {
+                events.push({
+                    type: "response.reasoning_summary_text.delta",
+                    delta: delta.reasoning_content,
+                    response_id: oachunk.id
+                });
+            }
+
+            if (delta.content) {
+                events.push({
+                    type: "response.output_text.delta",
+                    delta: delta.content,
+                    response_id: oachunk.id
+                });
+            }
+
+            if (delta.tool_calls) {
+                for (const tc of delta.tool_calls) {
+                    if (tc.function?.name) {
+                        events.push({
+                            type: "response.output_item.added",
+                            item: { id: tc.id, type: "function_call", name: tc.function.name, arguments: "" },
+                            response_id: oachunk.id
+                        });
+                    }
+                    if (tc.function?.arguments) {
+                        events.push({
+                            type: "response.custom_tool_call_input.delta",
+                            delta: tc.function.arguments,
+                            item_id: tc.id,
+                            response_id: oachunk.id
+                        });
+                    }
+                }
+            }
+
+            if (choice.finish_reason) {
+                events.push({ type: "response.completed", response: { id: oachunk.id, status: "completed" } });
+            }
+        }
+
+        return events;
+    }
+
+    /**
+     * Grok响应 -> Codex响应
+     */
+    toCodexResponse(grokResponse, model) {
+        const openaiRes = this.toOpenAIResponse(grokResponse, model);
+        if (!openaiRes) return null;
+
+        const choice = openaiRes.choices[0];
+        const message = choice.message;
+        const output = [];
+
+        if (message.content) {
+            output.push({
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: message.content }]
+            });
+        }
+
+        if (message.reasoning_content) {
+            output.push({
+                type: "reasoning",
+                summary: [{ type: "summary_text", text: message.reasoning_content }]
+            });
+        }
+
+        if (message.tool_calls) {
+            for (const tc of message.tool_calls) {
+                output.push({
+                    type: "function_call",
+                    call_id: tc.id,
+                    name: tc.function.name,
+                    arguments: tc.function.arguments
+                });
+            }
+        }
+
+        return {
+            response: {
+                id: openaiRes.id,
+                output: output,
+                usage: {
+                    input_tokens: openaiRes.usage.prompt_tokens,
+                    output_tokens: openaiRes.usage.completion_tokens,
+                    total_tokens: openaiRes.usage.total_tokens
+                }
+            }
+        };
+    }
+
+    /**
+     * Grok流式响应块 -> Codex流式响应块
+     */
+    toCodexStreamChunk(grokChunk, model) {
+        const openaiChunks = this.toOpenAIStreamChunk(grokChunk, model);
+        if (!openaiChunks) return null;
+
+        const codexChunks = [];
+        for (const oachunk of openaiChunks) {
+            const choice = oachunk.choices[0];
+            const delta = choice.delta;
+
+            if (delta.role === 'assistant') {
+                codexChunks.push({ type: "response.created", response: { id: oachunk.id } });
+            }
+
+            if (delta.reasoning_content) {
+                codexChunks.push({
+                    type: "response.reasoning_summary_text.delta",
+                    delta: delta.reasoning_content,
+                    response: { id: oachunk.id }
+                });
+            }
+
+            if (delta.content) {
+                codexChunks.push({
+                    type: "response.output_text.delta",
+                    delta: delta.content,
+                    response: { id: oachunk.id }
+                });
+            }
+
+            if (delta.tool_calls) {
+                for (const tc of delta.tool_calls) {
+                    if (tc.function?.arguments) {
+                        codexChunks.push({
+                            type: "response.custom_tool_call_input.delta",
+                            delta: tc.function.arguments,
+                            item_id: tc.id,
+                            response: { id: oachunk.id }
+                        });
+                    }
+                }
+            }
+
+            if (choice.finish_reason) {
+                codexChunks.push({ type: "response.completed", response: { id: oachunk.id, usage: oachunk.usage } });
+            }
+        }
+
+        return codexChunks.length > 0 ? codexChunks : null;
+    }
+
+    /**
+     * Grok模型列表 -> OpenAI模型列表
+     */
+    toOpenAIModelList(grokModels) {
+        const models = Array.isArray(grokModels) ? grokModels : (grokModels?.models || grokModels?.data || []);
+        return {
+            object: "list",
+            data: models.map(m => ({
+                id: m.id || m.name || (typeof m === 'string' ? m : ''),
+                object: "model",
+                created: Math.floor(Date.now() / 1000),
+                owned_by: "xai",
+                display_name: m.display_name || m.name || m.id || (typeof m === 'string' ? m : ''),
+            })),
+        };
+    }
+
+    /**
+     * Grok模型列表 -> Gemini模型列表
+     */
+    toGeminiModelList(grokModels) {
+        const models = Array.isArray(grokModels) ? grokModels : (grokModels?.models || grokModels?.data || []);
+        return {
+            models: models.map(m => ({
+                name: `models/${m.id || m.name || (typeof m === 'string' ? m : '')}`,
+                version: "1.0",
+                displayName: m.display_name || m.name || m.id || (typeof m === 'string' ? m : ''),
+                description: m.description || `Grok model: ${m.name || m.id || (typeof m === 'string' ? m : '')}`,
+                inputTokenLimit: 131072,
+                outputTokenLimit: 8192,
+                supportedGenerationMethods: ["generateContent", "streamGenerateContent"]
+            }))
+        };
     }
 }

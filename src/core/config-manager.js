@@ -54,143 +54,109 @@ function normalizeConfiguredProviders(config) {
  * @returns {Object} The initialized configuration object.
  */
 export async function initializeConfig(args = process.argv.slice(2), configFilePath = 'configs/config.json') {
-    let currentConfig = {};
+    const defaultConfig = {
+        REQUIRED_API_KEY: "123456",
+        SERVER_PORT: 3000,
+        HOST: '0.0.0.0',
+        MODEL_PROVIDER: MODEL_PROVIDER.GEMINI_CLI,
+        SYSTEM_PROMPT_FILE_PATH: INPUT_SYSTEM_PROMPT_FILE, // Default value
+        SYSTEM_PROMPT_MODE: 'append',
+        PROXY_URL: null, // HTTP/HTTPS/SOCKS5 代理地址，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
+        PROXY_ENABLED_PROVIDERS: [], // 启用代理的提供商列表，如 ['gemini-cli-oauth', 'claude-kiro-oauth']
+        PROMPT_LOG_BASE_NAME: "prompt_log",
+        PROMPT_LOG_MODE: "none",
+        REQUEST_MAX_RETRIES: 3,
+        REQUEST_BASE_DELAY: 1000,
+        CREDENTIAL_SWITCH_MAX_RETRIES: 5, // 坏凭证切换最大重试次数（用于认证错误后切换凭证）
+        CRON_NEAR_MINUTES: 15,
+        CRON_REFRESH_TOKEN: false,
+        LOGIN_EXPIRY: 3600, // 登录过期时间（秒），默认1小时
+        LOGIN_MAX_ATTEMPTS: 5, // 最大失败重试次数
+        LOGIN_LOCKOUT_DURATION: 1800, // 锁定持续时间（秒），默认30分钟
+        LOGIN_MIN_INTERVAL: 5000, // 两次尝试之间的最小间隔（毫秒），默认1秒
+        PROVIDER_POOLS_FILE_PATH: null, // 新增号池配置文件路径
+        MAX_ERROR_COUNT: 10, // 提供商最大错误次数
+        providerFallbackChain: {}, // 跨类型 Fallback 链配置
+        LOG_ENABLED: true,
+        LOG_OUTPUT_MODE: "all",
+        LOG_LEVEL: "info",
+        LOG_DIR: "logs",
+        LOG_INCLUDE_REQUEST_ID: true,
+        LOG_INCLUDE_TIMESTAMP: true,
+        LOG_MAX_FILE_SIZE: 10485760,
+        LOG_MAX_FILES: 10,
+        TLS_SIDECAR_ENABLED: false, // 启用 Go uTLS sidecar（需要编译 tls-sidecar 二进制）
+        TLS_SIDECAR_ENABLED_PROVIDERS: [], // 启用 TLS Sidecar 的提供商列表
+        TLS_SIDECAR_PORT: 9090,     // sidecar 监听端口
+        TLS_SIDECAR_BINARY_PATH: null, // 自定义二进制路径（默认自动搜索）
+        TLS_SIDECAR_PROXY_URL: null    // TLS Sidecar 专用的上游代理地址
+    };
+
+    let currentConfig = { ...defaultConfig };
 
     try {
         const configData = fs.readFileSync(configFilePath, 'utf8');
-        currentConfig = JSON.parse(configData);
+        const loadedConfig = JSON.parse(configData);
+        Object.assign(currentConfig, loadedConfig);
         logger.info('[Config] Loaded configuration from configs/config.json');
     } catch (error) {
-        logger.error('[Config Error] Failed to load configs/config.json:', error.message);
-        // Fallback to default values if config.json is not found or invalid
-        currentConfig = {
-            REQUIRED_API_KEY: "123456",
-            SERVER_PORT: 3000,
-            HOST: '0.0.0.0',
-            MODEL_PROVIDER: MODEL_PROVIDER.GEMINI_CLI,
-            SYSTEM_PROMPT_FILE_PATH: INPUT_SYSTEM_PROMPT_FILE, // Default value
-            SYSTEM_PROMPT_MODE: 'append',
-            PROXY_URL: null, // HTTP/HTTPS/SOCKS5 代理地址，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
-            PROXY_ENABLED_PROVIDERS: [], // 启用代理的提供商列表，如 ['gemini-cli-oauth', 'claude-kiro-oauth']
-            PROMPT_LOG_BASE_NAME: "prompt_log",
-            PROMPT_LOG_MODE: "none",
-            REQUEST_MAX_RETRIES: 3,
-            REQUEST_BASE_DELAY: 1000,
-            CREDENTIAL_SWITCH_MAX_RETRIES: 5, // 坏凭证切换最大重试次数（用于认证错误后切换凭证）
-            CRON_NEAR_MINUTES: 15,
-            CRON_REFRESH_TOKEN: false,
-            LOGIN_EXPIRY: 3600, // 登录过期时间（秒），默认1小时
-            PROVIDER_POOLS_FILE_PATH: null, // 新增号池配置文件路径
-            MAX_ERROR_COUNT: 10, // 提供商最大错误次数
-            providerFallbackChain: {}, // 跨类型 Fallback 链配置
-            LOG_ENABLED: true,
-            LOG_OUTPUT_MODE: "all",
-            LOG_LEVEL: "info",
-            LOG_DIR: "logs",
-            LOG_INCLUDE_REQUEST_ID: true,
-            LOG_INCLUDE_TIMESTAMP: true,
-            LOG_MAX_FILE_SIZE: 10485760,
-            LOG_MAX_FILES: 10
-        };
-        logger.info('[Config] Using default configuration.');
+        if (error.code !== 'ENOENT') {
+            logger.error('[Config Error] Failed to load configs/config.json:', error.message);
+        } else {
+            logger.info('[Config] configs/config.json not found, using default configuration.');
+        }
     }
 
-    // Parse command-line arguments
+
+    // CLI argument definitions: { flag, configKey, type, validValues? }
+    // type: 'string' | 'int' | 'bool' | 'enum'
+    const cliArgDefs = [
+        { flag: '--api-key',              configKey: 'REQUIRED_API_KEY',       type: 'string' },
+        { flag: '--log-prompts',          configKey: 'PROMPT_LOG_MODE',        type: 'enum', validValues: ['console', 'file'] },
+        { flag: '--port',                 configKey: 'SERVER_PORT',            type: 'int' },
+        { flag: '--model-provider',       configKey: 'MODEL_PROVIDER',         type: 'string' },
+        { flag: '--system-prompt-file',   configKey: 'SYSTEM_PROMPT_FILE_PATH', type: 'string' },
+        { flag: '--system-prompt-mode',   configKey: 'SYSTEM_PROMPT_MODE',     type: 'enum', validValues: ['overwrite', 'append'] },
+        { flag: '--host',                 configKey: 'HOST',                   type: 'string' },
+        { flag: '--prompt-log-base-name', configKey: 'PROMPT_LOG_BASE_NAME',   type: 'string' },
+        { flag: '--cron-near-minutes',    configKey: 'CRON_NEAR_MINUTES',      type: 'int' },
+        { flag: '--cron-refresh-token',   configKey: 'CRON_REFRESH_TOKEN',     type: 'bool' },
+        { flag: '--provider-pools-file',  configKey: 'PROVIDER_POOLS_FILE_PATH', type: 'string' },
+        { flag: '--max-error-count',      configKey: 'MAX_ERROR_COUNT',        type: 'int' },
+        { flag: '--login-max-attempts',   configKey: 'LOGIN_MAX_ATTEMPTS',     type: 'int' },
+        { flag: '--login-lockout-duration', configKey: 'LOGIN_LOCKOUT_DURATION', type: 'int' },
+        { flag: '--login-min-interval',   configKey: 'LOGIN_MIN_INTERVAL',     type: 'int' },
+    ];
+
+    // Parse command-line arguments using definitions
+    const flagMap = new Map(cliArgDefs.map(def => [def.flag, def]));
     for (let i = 0; i < args.length; i++) {
-        if (args[i] === '--api-key') {
-            if (i + 1 < args.length) {
-                currentConfig.REQUIRED_API_KEY = args[i + 1];
-                i++;
-            } else {
-                logger.warn(`[Config Warning] --api-key flag requires a value.`);
-            }
-        } else if (args[i] === '--log-prompts') {
-            if (i + 1 < args.length) {
-                const mode = args[i + 1];
-                if (mode === 'console' || mode === 'file') {
-                    currentConfig.PROMPT_LOG_MODE = mode;
+        const def = flagMap.get(args[i]);
+        if (!def) continue;
+
+        if (i + 1 >= args.length) {
+            logger.warn(`[Config Warning] ${def.flag} flag requires a value.`);
+            continue;
+        }
+
+        const rawValue = args[++i];
+        switch (def.type) {
+            case 'string':
+                currentConfig[def.configKey] = rawValue;
+                break;
+            case 'int':
+                currentConfig[def.configKey] = parseInt(rawValue, 10);
+                break;
+            case 'bool':
+                currentConfig[def.configKey] = rawValue.toLowerCase() === 'true';
+                break;
+            case 'enum':
+                if (def.validValues.includes(rawValue)) {
+                    currentConfig[def.configKey] = rawValue;
                 } else {
-                    logger.warn(`[Config Warning] Invalid mode for --log-prompts. Expected 'console' or 'file'. Prompt logging is disabled.`);
+                    logger.warn(`[Config Warning] Invalid value for ${def.flag}. Expected one of: ${def.validValues.join(', ')}.`);
                 }
-                i++;
-            } else {
-                logger.warn(`[Config Warning] --log-prompts flag requires a value.`);
-            }
-        } else if (args[i] === '--port') {
-            if (i + 1 < args.length) {
-                currentConfig.SERVER_PORT = parseInt(args[i + 1], 10);
-                i++;
-            } else {
-                logger.warn(`[Config Warning] --port flag requires a value.`);
-            }
-        } else if (args[i] === '--model-provider') {
-            if (i + 1 < args.length) {
-                currentConfig.MODEL_PROVIDER = args[i + 1];
-                i++;
-            } else {
-                logger.warn(`[Config Warning] --model-provider flag requires a value.`);
-            }
-        } else if (args[i] === '--system-prompt-file') {
-            if (i + 1 < args.length) {
-                currentConfig.SYSTEM_PROMPT_FILE_PATH = args[i + 1];
-                i++;
-            } else {
-                logger.warn(`[Config Warning] --system-prompt-file flag requires a value.`);
-            }
-        } else if (args[i] === '--system-prompt-mode') {
-            if (i + 1 < args.length) {
-                const mode = args[i + 1];
-                if (mode === 'overwrite' || mode === 'append') {
-                    currentConfig.SYSTEM_PROMPT_MODE = mode;
-                } else {
-                    logger.warn(`[Config Warning] Invalid mode for --system-prompt-mode. Expected 'overwrite' or 'append'. Using default 'overwrite'.`);
-                }
-                i++;
-            } else {
-                logger.warn(`[Config Warning] --system-prompt-mode flag requires a value.`);
-            }
-        } else if (args[i] === '--host') {
-            if (i + 1 < args.length) {
-                currentConfig.HOST = args[i + 1];
-                i++;
-            } else {
-                logger.warn(`[Config Warning] --host flag requires a value.`);
-            }
-        } else if (args[i] === '--prompt-log-base-name') {
-            if (i + 1 < args.length) {
-                currentConfig.PROMPT_LOG_BASE_NAME = args[i + 1];
-                i++;
-            } else {
-                logger.warn(`[Config Warning] --prompt-log-base-name flag requires a value.`);
-            }
-        } else if (args[i] === '--cron-near-minutes') {
-            if (i + 1 < args.length) {
-                currentConfig.CRON_NEAR_MINUTES = parseInt(args[i + 1], 10);
-                i++;
-            } else {
-                logger.warn(`[Config Warning] --cron-near-minutes flag requires a value.`);
-            }
-        } else if (args[i] === '--cron-refresh-token') {
-            if (i + 1 < args.length) {
-                currentConfig.CRON_REFRESH_TOKEN = args[i + 1].toLowerCase() === 'true';
-                i++;
-            } else {
-                logger.warn(`[Config Warning] --cron-refresh-token flag requires a value.`);
-            }
-        } else if (args[i] === '--provider-pools-file') {
-            if (i + 1 < args.length) {
-                currentConfig.PROVIDER_POOLS_FILE_PATH = args[i + 1];
-                i++;
-            } else {
-                logger.warn(`[Config Warning] --provider-pools-file flag requires a value.`);
-            }
-        } else if (args[i] === '--max-error-count') {
-            if (i + 1 < args.length) {
-                currentConfig.MAX_ERROR_COUNT = parseInt(args[i + 1], 10);
-                i++;
-            } else {
-                logger.warn(`[Config Warning] --max-error-count flag requires a value.`);
-            }
+                break;
         }
     }
 

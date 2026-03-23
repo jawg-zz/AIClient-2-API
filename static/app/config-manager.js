@@ -5,6 +5,77 @@ import { handleProviderChange, handleGeminiCredsTypeChange, handleKiroCredsTypeC
 import { loadProviders } from './provider-manager.js';
 import { t } from './i18n.js';
 
+// 提供商配置缓存
+let currentProviderConfigs = null;
+
+/**
+ * 更新提供商配置并重新渲染配置页面的提供商选择标签
+ * @param {Array} configs - 提供商配置列表
+ */
+function updateConfigProviderConfigs(configs) {
+    currentProviderConfigs = configs;
+    
+    // 渲染基础设置中的模型提供商选择
+    const modelProviderEl = document.getElementById('modelProvider');
+    if (modelProviderEl) {
+        renderProviderTags(modelProviderEl, configs, true);
+    }
+    
+    // 渲染代理设置中的提供商选择
+    const proxyProvidersEl = document.getElementById('proxyProviders');
+    if (proxyProvidersEl) {
+        renderProviderTags(proxyProvidersEl, configs, false);
+    }
+
+    // 渲染 TLS Sidecar 设置中的提供商选择
+    const tlsSidecarProvidersEl = document.getElementById('tlsSidecarProviders');
+    if (tlsSidecarProvidersEl) {
+        renderProviderTags(tlsSidecarProvidersEl, configs, false);
+    }
+    
+    // 重新加载当前配置以恢复选中状态
+    loadConfiguration();
+}
+
+/**
+ * 渲染提供商标签按钮
+ * @param {HTMLElement} container - 容器元素
+ * @param {Array} configs - 提供商配置列表
+ * @param {boolean} isRequired - 是否至少需要选择一个（用于点击事件逻辑）
+ */
+function renderProviderTags(container, configs, isRequired) {
+    // 过滤掉不可见的提供商
+    const visibleConfigs = configs.filter(c => c.visible !== false);
+    
+    container.innerHTML = visibleConfigs.map(c => `
+        <button type="button" class="provider-tag" data-value="${c.id}">
+            <i class="fas ${c.icon || 'fa-server'}"></i>
+            <span>${c.name}</span>
+        </button>
+    `).join('');
+    
+    // 为新生成的标签添加点击事件
+    const tags = container.querySelectorAll('.provider-tag');
+    tags.forEach(tag => {
+        tag.addEventListener('click', (e) => {
+            e.preventDefault();
+            const isSelected = tag.classList.contains('selected');
+            
+            if (isRequired) {
+                const selectedCount = container.querySelectorAll('.provider-tag.selected').length;
+                // 如果当前是选中状态且只剩一个选中的，不允许取消
+                if (isSelected && selectedCount === 1) {
+                    showToast(t('common.warning'), t('config.modelProviderRequired'), 'warning');
+                    return;
+                }
+            }
+            
+            // 切换选中状态
+            tag.classList.toggle('selected');
+        });
+    });
+}
+
 /**
  * 加载配置
  */
@@ -24,7 +95,7 @@ async function loadConfiguration() {
         if (portEl) portEl.value = data.SERVER_PORT || 3000;
         
         if (modelProviderEl) {
-            // 处理多选 MODEL_PROVIDER (标签按钮)
+            // 处理多选 MODEL_PROVIDER
             const providers = Array.isArray(data.DEFAULT_MODEL_PROVIDERS)
                 ? data.DEFAULT_MODEL_PROVIDERS
                 : (typeof data.MODEL_PROVIDER === 'string' ? data.MODEL_PROVIDER.split(',') : []);
@@ -44,28 +115,6 @@ async function loadConfiguration() {
             if (!anySelected && tags.length > 0) {
                 tags[0].classList.add('selected');
             }
-
-            // 为标签按钮添加点击事件监听
-            tags.forEach(tag => {
-                // 移除旧的监听器（通过克隆节点）
-                const newTag = tag.cloneNode(true);
-                tag.parentNode.replaceChild(newTag, tag);
-                
-                newTag.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    const isSelected = newTag.classList.contains('selected');
-                    const selectedCount = modelProviderEl.querySelectorAll('.provider-tag.selected').length;
-                    
-                    // 如果当前是选中状态且只剩一个选中的，不允许取消
-                    if (isSelected && selectedCount === 1) {
-                        showToast(t('common.warning'), t('config.modelProviderRequired'), 'warning');
-                        return;
-                    }
-                    
-                    // 切换选中状态
-                    newTag.classList.toggle('selected');
-                });
-            });
         }
         
         if (systemPromptEl) systemPromptEl.value = data.systemPrompt || '';
@@ -143,19 +192,6 @@ async function loadConfiguration() {
                     tag.classList.remove('selected');
                 }
             });
-            
-            // 为代理提供商标签按钮添加点击事件监听
-            proxyTags.forEach(tag => {
-                // 移除旧的监听器（通过克隆节点）
-                const newTag = tag.cloneNode(true);
-                tag.parentNode.replaceChild(newTag, tag);
-                
-                newTag.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    // 代理提供商可以全部取消选择，所以不需要检查最少选择数量
-                    newTag.classList.toggle('selected');
-                });
-            });
         }
         
         // 加载日志配置
@@ -176,6 +212,29 @@ async function loadConfiguration() {
         if (logIncludeTimestampEl) logIncludeTimestampEl.checked = data.LOG_INCLUDE_TIMESTAMP !== false;
         if (logMaxFileSizeEl) logMaxFileSizeEl.value = data.LOG_MAX_FILE_SIZE || 10485760;
         if (logMaxFilesEl) logMaxFilesEl.value = data.LOG_MAX_FILES || 10;
+        
+        // TLS Sidecar 配置
+        const tlsSidecarEnabledEl = document.getElementById('tlsSidecarEnabled');
+        const tlsSidecarPortEl = document.getElementById('tlsSidecarPort');
+        const tlsSidecarProxyUrlEl = document.getElementById('tlsSidecarProxyUrl');
+        const tlsSidecarProvidersEl = document.getElementById('tlsSidecarProviders');
+
+        if (tlsSidecarEnabledEl) tlsSidecarEnabledEl.checked = data.TLS_SIDECAR_ENABLED || false;
+        if (tlsSidecarPortEl) tlsSidecarPortEl.value = data.TLS_SIDECAR_PORT || 9090;
+        if (tlsSidecarProxyUrlEl) tlsSidecarProxyUrlEl.value = data.TLS_SIDECAR_PROXY_URL || '';
+        
+        if (tlsSidecarProvidersEl) {
+            const enabledProviders = data.TLS_SIDECAR_ENABLED_PROVIDERS || [];
+            const tags = tlsSidecarProvidersEl.querySelectorAll('.provider-tag');
+            tags.forEach(tag => {
+                const value = tag.getAttribute('data-value');
+                if (enabledProviders.includes(value)) {
+                    tag.classList.add('selected');
+                } else {
+                    tag.classList.remove('selected');
+                }
+            });
+        }
         
     } catch (error) {
         console.error('Failed to load configuration:', error);
@@ -274,6 +333,19 @@ async function saveConfiguration() {
     config.LOG_INCLUDE_TIMESTAMP = document.getElementById('logIncludeTimestamp')?.checked !== false;
     config.LOG_MAX_FILE_SIZE = parseInt(document.getElementById('logMaxFileSize')?.value || 10485760);
     config.LOG_MAX_FILES = parseInt(document.getElementById('logMaxFiles')?.value || 10);
+    
+    // TLS Sidecar 配置
+    config.TLS_SIDECAR_ENABLED = document.getElementById('tlsSidecarEnabled')?.checked || false;
+    config.TLS_SIDECAR_PORT = parseInt(document.getElementById('tlsSidecarPort')?.value || 9090);
+    config.TLS_SIDECAR_PROXY_URL = document.getElementById('tlsSidecarProxyUrl')?.value?.trim() || null;
+    
+    const tlsSidecarProvidersEl = document.getElementById('tlsSidecarProviders');
+    if (tlsSidecarProvidersEl) {
+        config.TLS_SIDECAR_ENABLED_PROVIDERS = Array.from(tlsSidecarProvidersEl.querySelectorAll('.provider-tag.selected'))
+            .map(tag => tag.getAttribute('data-value'));
+    } else {
+        config.TLS_SIDECAR_ENABLED_PROVIDERS = [];
+    }
 
     try {
         await window.apiClient.post('/config', config);
@@ -308,7 +380,30 @@ async function saveConfiguration() {
     }
 }
 
+/**
+ * 自动生成 API 密钥
+ */
+function generateApiKey() {
+    const apiKeyEl = document.getElementById('apiKey');
+    if (!apiKeyEl) return;
+    
+    // 生成 32 位 16 进制随机字符串
+    const array = new Uint8Array(16);
+    window.crypto.getRandomValues(array);
+    const randomKey = 'sk-' + Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
+    
+    apiKeyEl.value = randomKey;
+    
+    showToast(t('common.success'), t('config.apiKey.generated') || '已生成新的 API 密钥', 'success');
+    
+    // 触发输入框的 change 事件
+    apiKeyEl.dispatchEvent(new Event('input', { bubbles: true }));
+    apiKeyEl.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 export {
     loadConfiguration,
-    saveConfiguration
+    saveConfiguration,
+    updateConfigProviderConfigs,
+    generateApiKey
 };

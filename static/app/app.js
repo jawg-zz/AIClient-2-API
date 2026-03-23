@@ -46,7 +46,8 @@ import {
 
 import {
     loadConfiguration,
-    saveConfiguration
+    saveConfiguration,
+    generateApiKey
 } from './config-manager.js';
 
 import {
@@ -81,6 +82,10 @@ import {
     initPluginManager,
     togglePlugin
 } from './plugin-manager.js';
+
+import {
+    initTutorialManager
+} from './tutorial-manager.js';
 
 /**
  * 加载初始数据
@@ -118,6 +123,7 @@ function initApp() {
     initUsageManager(); // 初始化用量管理功能
     initImageZoom(); // 初始化图片放大功能
     initPluginManager(); // 初始化插件管理功能
+    initTutorialManager(); // 初始化教程管理功能
     initMobileMenu(); // 初始化移动端菜单
     loadInitialData();
     
@@ -236,6 +242,7 @@ window.loadConfigList = loadConfigList;
 window.closeConfigModal = closeConfigModal;
 window.copyConfigContent = copyConfigContent;
 window.reloadConfig = reloadConfig;
+window.generateApiKey = generateApiKey;
 
 // 用量管理相关全局函数
 window.refreshUsage = refreshUsage;

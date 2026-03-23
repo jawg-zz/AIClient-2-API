@@ -7,26 +7,13 @@ import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
 import open from 'open';
+import { configureTLSSidecar } from '../../utils/proxy-utils.js';
 import { API_ACTIONS, formatExpiryTime, isRetryableNetworkError, formatExpiryLog } from '../../utils/common.js';
 import { getProviderModels } from '../provider-models.js';
 import { handleGeminiCliOAuth } from '../../auth/oauth-handlers.js';
 import { getProxyConfigForProvider, getGoogleAuthProxyConfig } from '../../utils/proxy-utils.js';
 import { getProviderPoolManager } from '../../services/service-manager.js';
 import { MODEL_PROVIDER } from '../../utils/common.js';
-
-// 配置 HTTP/HTTPS agent 限制连接池大小，避免资源泄漏
-const httpAgent = new http.Agent({
-    keepAlive: true,
-    maxSockets: 100,
-    maxFreeSockets: 5,
-    timeout: 120000,
-});
-const httpsAgent = new https.Agent({
-    keepAlive: true,
-    maxSockets: 100,
-    maxFreeSockets: 5,
-    timeout: 120000,
-});
 
 // --- Constants ---
 const AUTH_REDIRECT_PORT = 8085;
@@ -38,6 +25,67 @@ const OAUTH_CLIENT_ID = '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.goog
 const OAUTH_CLIENT_SECRET = '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';
 const GEMINI_MODELS = getProviderModels(MODEL_PROVIDER.GEMINI_CLI);
 const ANTI_TRUNCATION_MODELS = GEMINI_MODELS.map(model => `anti-${model}`);
+const GEMINI_CLI_VERSION = '0.31.0';
+const GEMINI_CLI_API_CLIENT_HEADER = 'google-genai-sdk/1.41.0 gl-node/v22.19.0';
+
+/**
+ * 设置 Gemini CLI 所需的特定请求头
+ * @param {Object} headers - 请求头对象
+ * @param {string} model - 模型名称
+ */
+function applyGeminiCLIHeaders(headers, model) {
+    const platform = os.platform();
+    let arch = os.arch();
+    if (arch === 'ia32') arch = 'x86';
+    const modelName = model || 'unknown';
+    if (model !== 'load-code-assist' && model !== 'onboard-user') {
+        headers['User-Agent'] = `GeminiCLI/${GEMINI_CLI_VERSION}/${modelName} (${platform}; ${arch})`;
+    }
+    headers['X-Goog-Api-Client'] = GEMINI_CLI_API_CLIENT_HEADER;
+}
+
+
+/**
+ * 从 Google API 的 429 错误响应中提取重试延迟
+ * @param {Object|string} errorBody - 错误响应体
+ * @returns {number|null} 延迟毫秒数
+ */
+function parseRetryDelay(errorBody) {
+    try {
+        const data = typeof errorBody === 'string' ? JSON.parse(errorBody) : errorBody;
+        const details = data?.error?.details;
+        if (Array.isArray(details)) {
+            for (const detail of details) {
+                if (detail['@type'] === 'type.googleapis.com/google.rpc.RetryInfo') {
+                    const retryDelay = detail.retryDelay;
+                    if (retryDelay) {
+                        const match = retryDelay.match(/^([\d.]+)s$/);
+                        if (match) return parseFloat(match[1]) * 1000;
+                    }
+                }
+            }
+            for (const detail of details) {
+                if (detail['@type'] === 'type.googleapis.com/google.rpc.ErrorInfo') {
+                    const quotaResetDelay = detail.metadata?.quotaResetDelay;
+                    if (quotaResetDelay) {
+                        const match = quotaResetDelay.match(/^([\d.]+)(ms|s)$/);
+                        if (match) {
+                            let ms = parseFloat(match[1]);
+                            if (match[2] === 's') ms *= 1000;
+                            return ms;
+                        }
+                    }
+                }
+            }
+        }
+        const message = data?.error?.message;
+        if (message) {
+            const match = message.match(/after\s+(\d+)s\.?/);
+            if (match) return parseInt(match[1]) * 1000;
+        }
+    } catch (e) {}
+    return null;
+}
 
 function is_anti_truncation_model(model) {
     return ANTI_TRUNCATION_MODELS.some(antiModel => model.includes(antiModel));
@@ -134,7 +182,7 @@ async function* apply_anti_truncation_to_stream(service, model, requestBody) {
             project: service.projectId,
             request: currentRequest
         };
-        const stream = service.streamApi(API_ACTIONS.STREAM_GENERATE_CONTENT, apiRequest);
+        const stream = service.streamApi(API_ACTIONS.STREAM_GENERATE_CONTENT, apiRequest, false, 0, model);
 
         let lastChunk = null;
         let hasContent = false;
@@ -155,9 +203,9 @@ async function* apply_anti_truncation_to_stream(service, model, requestBody) {
             lastChunk.candidates[0].finishReason === 'MAX_TOKENS') {
 
             // 提取已生成的文本内容
-            if (lastChunk.candidates[0].content && lastChunk.candidates[0].content.parts) {
+            if (lastChunk.candidates[0].content && Array.isArray(lastChunk.candidates[0].content.parts)) {
                 const generatedParts = lastChunk.candidates[0].content.parts
-                    .filter(part => part.text)
+                    .filter(part => part?.text)
                     .map(part => part.text);
 
                 if (generatedParts.length > 0) {
@@ -197,6 +245,20 @@ async function* apply_anti_truncation_to_stream(service, model, requestBody) {
 
 export class GeminiApiService {
     constructor(config) {
+        // 配置 HTTP/HTTPS agent 限制连接池大小，避免资源泄漏
+        this.httpAgent = new http.Agent({
+            keepAlive: true,
+            maxSockets: 100,
+            maxFreeSockets: 5,
+            timeout: 120000,
+        });
+        this.httpsAgent = new https.Agent({
+            keepAlive: true,
+            maxSockets: 100,
+            maxFreeSockets: 5,
+            timeout: 120000,
+        });
+
         // 检查是否需要使用代理
         const proxyConfig = getGoogleAuthProxyConfig(config, 'gemini-cli-oauth');
         
@@ -211,7 +273,7 @@ export class GeminiApiService {
             logger.info('[Gemini] Using proxy for OAuth2Client');
         } else {
             oauth2Options.transporterOptions = {
-                agent: httpsAgent,
+                agent: this.httpsAgent,
             };
         }
         
@@ -253,6 +315,10 @@ export class GeminiApiService {
         logger.info(`[Gemini] Initialization complete. Project ID: ${this.projectId}`);
     }
 
+    _applySidecar(requestOptions) {
+        return configureTLSSidecar(requestOptions, this.config, MODEL_PROVIDER.GEMINI_CLI);
+    }
+
     /**
      * 加载凭证信息（不执行刷新）
      */
@@ -285,16 +351,16 @@ export class GeminiApiService {
     }
 
     async initializeAuth(forceRefresh = false) {
-        // 检查是否需要刷新 Token
-        const needsRefresh = forceRefresh
+        // 首先执行基础凭证加载
+        await this.loadCredentials();
+
+        // 检查是否需要刷新 Token（加载凭证后评估）
+        const needsRefresh = forceRefresh || this.isTokenExpiringSoon();
 
         if (this.authClient.credentials.access_token && !needsRefresh) {
             // Token 有效且不需要刷新
             return;
         }
-
-        // 首先执行基础凭证加载
-        await this.loadCredentials();
 
         // 只有在明确要求刷新，或者 AccessToken 确实缺失时，才执行刷新/认证
         // 注意：在 V2 架构下，此方法主要由 PoolManager 的后台队列调用
@@ -412,7 +478,7 @@ export class GeminiApiService {
                 metadata: clientMetadata,
             }
 
-            const loadResponse = await this.callApi('loadCodeAssist', loadRequest);
+            const loadResponse = await this.callApi('loadCodeAssist', loadRequest, false, 0, 'load-code-assist');
 
             // Check if we already have a project ID from the response
             if (loadResponse.cloudaicompanionProject) {
@@ -429,7 +495,7 @@ export class GeminiApiService {
                 metadata: clientMetadata,
             };
 
-            let lroResponse = await this.callApi('onboardUser', onboardRequest);
+            let lroResponse = await this.callApi('onboardUser', onboardRequest, false, 0, 'onboard-user');
 
             // Poll until operation is complete with timeout protection
             const MAX_RETRIES = 30; // Maximum number of retries (60 seconds total)
@@ -437,7 +503,7 @@ export class GeminiApiService {
 
             while (!lroResponse.done && retryCount < MAX_RETRIES) {
                 await new Promise(resolve => setTimeout(resolve, 2000));
-                lroResponse = await this.callApi('onboardUser', onboardRequest);
+                lroResponse = await this.callApi('onboardUser', onboardRequest, false, 0, 'onboard-user');
                 retryCount++;
             }
 
@@ -467,18 +533,22 @@ export class GeminiApiService {
         return { models: formattedModels };
     }
 
-    async callApi(method, body, isRetry = false, retryCount = 0) {
+    async callApi(method, body, isRetry = false, retryCount = 0, model = 'unknown') {
         const maxRetries = this.config.REQUEST_MAX_RETRIES || 3;
         const baseDelay = this.config.REQUEST_BASE_DELAY || 1000; // 1 second base delay
 
         try {
+            const headers = { "Content-Type": "application/json" };
+            applyGeminiCLIHeaders(headers, model);
+
             const requestOptions = {
                 url: `${this.codeAssistEndpoint}/${this.apiVersion}:${method}`,
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: headers,
                 responseType: "json",
                 body: JSON.stringify(body),
             };
+            this._applySidecar(requestOptions);
             const res = await this.authClient.request(requestOptions);
             return res.data;
         } catch (error) {
@@ -513,10 +583,10 @@ export class GeminiApiService {
 
             // Handle 429 (Too Many Requests) with exponential backoff
             if (status === 429 && retryCount < maxRetries) {
-                const delay = baseDelay * Math.pow(2, retryCount);
+                const delay = parseRetryDelay(error.response?.data) || (baseDelay * Math.pow(2, retryCount));
                 logger.info(`[Gemini API] Received 429 (Too Many Requests). Retrying in ${delay}ms... (attempt ${retryCount + 1}/${maxRetries})`);
                 await new Promise(resolve => setTimeout(resolve, delay));
-                return this.callApi(method, body, isRetry, retryCount + 1);
+                return this.callApi(method, body, isRetry, retryCount + 1, model);
             }
 
             // Handle other retryable errors (5xx server errors)
@@ -524,7 +594,7 @@ export class GeminiApiService {
                 const delay = baseDelay * Math.pow(2, retryCount);
                 logger.info(`[Gemini API] Received ${status} server error. Retrying in ${delay}ms... (attempt ${retryCount + 1}/${maxRetries})`);
                 await new Promise(resolve => setTimeout(resolve, delay));
-                return this.callApi(method, body, isRetry, retryCount + 1);
+                return this.callApi(method, body, isRetry, retryCount + 1, model);
             }
 
             // Handle network errors (ECONNRESET, ETIMEDOUT, etc.) with exponential backoff
@@ -533,26 +603,30 @@ export class GeminiApiService {
                 const errorIdentifier = errorCode || errorMessage.substring(0, 50);
                 logger.info(`[Gemini API] Network error (${errorIdentifier}). Retrying in ${delay}ms... (attempt ${retryCount + 1}/${maxRetries})`);
                 await new Promise(resolve => setTimeout(resolve, delay));
-                return this.callApi(method, body, isRetry, retryCount + 1);
+                return this.callApi(method, body, isRetry, retryCount + 1, model);
             }
 
             throw error;
         }
     }
 
-    async * streamApi(method, body, isRetry = false, retryCount = 0) {
+    async * streamApi(method, body, isRetry = false, retryCount = 0, model = 'unknown') {
         const maxRetries = this.config.REQUEST_MAX_RETRIES || 3;
         const baseDelay = this.config.REQUEST_BASE_DELAY || 1000; // 1 second base delay
 
         try {
+            const headers = { "Content-Type": "application/json" };
+            applyGeminiCLIHeaders(headers, model);
+
             const requestOptions = {
                 url: `${this.codeAssistEndpoint}/${this.apiVersion}:${method}`,
                 method: "POST",
                 params: { alt: "sse" },
-                headers: { "Content-Type": "application/json" },
+                headers: headers,
                 responseType: "stream",
                 body: JSON.stringify(body),
             };
+            this._applySidecar(requestOptions);
             const res = await this.authClient.request(requestOptions);
             if (res.status !== 200) {
                 let errorBody = '';
@@ -592,10 +666,10 @@ export class GeminiApiService {
 
             // Handle 429 (Too Many Requests) with exponential backoff
             if (status === 429 && retryCount < maxRetries) {
-                const delay = baseDelay * Math.pow(2, retryCount);
+                const delay = parseRetryDelay(error.response?.data) || (baseDelay * Math.pow(2, retryCount));
                 logger.info(`[Gemini API] Received 429 (Too Many Requests) during stream. Retrying in ${delay}ms... (attempt ${retryCount + 1}/${maxRetries})`);
                 await new Promise(resolve => setTimeout(resolve, delay));
-                yield* this.streamApi(method, body, isRetry, retryCount + 1);
+                yield* this.streamApi(method, body, isRetry, retryCount + 1, model);
                 return;
             }
 
@@ -604,7 +678,7 @@ export class GeminiApiService {
                 const delay = baseDelay * Math.pow(2, retryCount);
                 logger.info(`[Gemini API] Received ${status} server error during stream. Retrying in ${delay}ms... (attempt ${retryCount + 1}/${maxRetries})`);
                 await new Promise(resolve => setTimeout(resolve, delay));
-                yield* this.streamApi(method, body, isRetry, retryCount + 1);
+                yield* this.streamApi(method, body, isRetry, retryCount + 1, model);
                 return;
             }
 
@@ -614,7 +688,7 @@ export class GeminiApiService {
                 const errorIdentifier = errorCode || errorMessage.substring(0, 50);
                 logger.info(`[Gemini API] Network error (${errorIdentifier}) during stream. Retrying in ${delay}ms... (attempt ${retryCount + 1}/${maxRetries})`);
                 await new Promise(resolve => setTimeout(resolve, delay));
-                yield* this.streamApi(method, body, isRetry, retryCount + 1);
+                yield* this.streamApi(method, body, isRetry, retryCount + 1, model);
                 return;
             }
 
@@ -645,6 +719,9 @@ export class GeminiApiService {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
         }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
+        }
         
         // 检查 token 是否即将过期，如果是则推送到刷新队列
         if (this.isExpiryDateNear()) {
@@ -657,14 +734,16 @@ export class GeminiApiService {
             }
         }
         
-        let selectedModel = model;
+        let baseModel = model;
         if (!GEMINI_MODELS.includes(model)) {
             logger.warn(`[Gemini] Model '${model}' not found. Using default model: '${GEMINI_MODELS[0]}'`);
-            selectedModel = GEMINI_MODELS[0];
+            baseModel = GEMINI_MODELS[0];
         }
-        const processedRequestBody = ensureRolesInContents(requestBody);
-        const apiRequest = { model: selectedModel, project: this.projectId, request: processedRequestBody };
-        const response = await this.callApi(API_ACTIONS.GENERATE_CONTENT, apiRequest);
+
+        const processedRequestBody = ensureRolesInContents({ ...requestBody });
+        const apiRequest = { model: baseModel, project: this.projectId, request: processedRequestBody };
+        
+        const response = await this.callApi(API_ACTIONS.GENERATE_CONTENT, apiRequest, false, 0, baseModel);
         return toGeminiApiResponse(response.response);
     }
 
@@ -675,6 +754,9 @@ export class GeminiApiService {
         if (requestBody._monitorRequestId) {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
+        }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
         }
 
         // 检查 token 是否即将过期，如果是则推送到刷新队列
@@ -693,21 +775,23 @@ export class GeminiApiService {
             // 从防截断模型名中提取实际模型名
             const actualModel = extract_model_from_anti_model(model);
             // 使用防截断流处理
-            const processedRequestBody = ensureRolesInContents(requestBody);
+            const processedRequestBody = ensureRolesInContents({ ...requestBody });
             yield* apply_anti_truncation_to_stream(this, actualModel, processedRequestBody);
-        } else {
-            // 正常流处理
-            let selectedModel = model;
-            if (!GEMINI_MODELS.includes(model)) {
-                logger.warn(`[Gemini] Model '${model}' not found. Using default model: '${GEMINI_MODELS[0]}'`);
-                selectedModel = GEMINI_MODELS[0];
-            }
-            const processedRequestBody = ensureRolesInContents(requestBody);
-            const apiRequest = { model: selectedModel, project: this.projectId, request: processedRequestBody };
-            const stream = this.streamApi(API_ACTIONS.STREAM_GENERATE_CONTENT, apiRequest);
-            for await (const chunk of stream) {
-                yield toGeminiApiResponse(chunk.response);
-            }
+            return;
+        }
+
+        let baseModel = model;
+        if (!GEMINI_MODELS.includes(model)) {
+            logger.warn(`[Gemini] Model '${model}' not found. Using default model: '${GEMINI_MODELS[0]}'`);
+            baseModel = GEMINI_MODELS[0];
+        }
+
+        const processedRequestBody = ensureRolesInContents({ ...requestBody });
+        const apiRequest = { model: baseModel, project: this.projectId, request: processedRequestBody };
+        
+        const stream = this.streamApi(API_ACTIONS.STREAM_GENERATE_CONTENT, apiRequest, false, 0, baseModel);
+        for await (const chunk of stream) {
+            yield toGeminiApiResponse(chunk.response);
         }
     }
 
@@ -725,6 +809,17 @@ export class GeminiApiService {
             logger.error(`[Gemini] Error checking expiry date: ${error.message}`);
             return false;
         }
+    }
+
+    isTokenExpiringSoon() {
+        if (!this.authClient.credentials.expiry_date) {
+            return false;
+        }
+        const currentTime = Date.now();
+        const expiryTime = this.authClient.credentials.expiry_date;
+        const REFRESH_SKEW = 3000; // 50分钟
+        const refreshSkewMs = REFRESH_SKEW * 1000;
+        return expiryTime <= (currentTime + refreshSkewMs);
     }
 
     /**
@@ -793,6 +888,7 @@ export class GeminiApiService {
                     body: JSON.stringify(requestBody)
                 };
 
+                this._applySidecar(requestOptions);
                 const res = await this.authClient.request(requestOptions);
                 // logger.info(`[Gemini] retrieveUserQuota success`, JSON.stringify(res.data));
                 if (res.data && res.data.buckets) {

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 /**
  * 统一日志工具类
@@ -20,8 +21,10 @@ class Logger {
         };
         this.currentLogFile = null;
         this.logStream = null;
-        this.currentRequestId = null; // 当前请求ID
+        this.asyncStorage = new AsyncLocalStorage(); // 使用 AsyncLocalStorage 存储请求上下文
         this.requestContext = new Map(); // 存储请求上下文
+        this.contextTTL = 5 * 60 * 1000; // 请求上下文 TTL：5 分钟
+        this._contextCleanupTimer = null;
         this.levels = {
             debug: 0,
             info: 1,
@@ -29,6 +32,7 @@ class Logger {
             error: 3
         };
     }
+
 
     /**
      * 初始化日志配置
@@ -78,7 +82,22 @@ class Logger {
     }
 
     /**
-     * 设置请求上下文
+     * 在请求上下文中运行
+     * @param {string} requestId - 请求ID
+     * @param {Function} callback - 回调函数
+     * @returns {any}
+     */
+    runWithContext(requestId, callback) {
+        if (!requestId) {
+            requestId = randomUUID().substring(0, 8);
+        }
+        this.requestContext.set(requestId, { _createdAt: Date.now() });
+        this._ensureContextCleanup();
+        return this.asyncStorage.run(requestId, callback);
+    }
+
+    /**
+     * 设置请求上下文 (不推荐直接使用，建议使用 runWithContext)
      * @param {string} requestId - 请求ID
      * @param {Object} context - 上下文信息
      */
@@ -86,8 +105,9 @@ class Logger {
         if (!requestId) {
             requestId = randomUUID().substring(0, 8);
         }
-        this.currentRequestId = requestId;
-        this.requestContext.set(requestId, context);
+        this.asyncStorage.enterWith(requestId);
+        this.requestContext.set(requestId, { ...context, _createdAt: Date.now() });
+        this._ensureContextCleanup();
         return requestId;
     }
 
@@ -96,8 +116,8 @@ class Logger {
      * @returns {string} 请求ID
      */
     getCurrentRequestId() {
-        // 从上下文中获取当前请求ID
-        return this.currentRequestId;
+        // 从 AsyncLocalStorage 中获取当前请求ID
+        return this.asyncStorage.getStore();
     }
 
     /**
@@ -106,6 +126,9 @@ class Logger {
      * @returns {Object} 上下文信息
      */
     getRequestContext(requestId) {
+        if (!requestId) {
+            requestId = this.getCurrentRequestId();
+        }
         return this.requestContext.get(requestId) || {};
     }
 
@@ -117,7 +140,39 @@ class Logger {
         if (requestId) {
             this.requestContext.delete(requestId);
         }
-        this.currentRequestId = null;
+        // AsyncLocalStorage 不需要手动清除，run() 会在结束时自动处理
+        // 如果使用了 enterWith，则没有简单的方法在该异步路径中清除
+    }
+
+
+    /**
+     * 启动定期清理过期请求上下文的定时器（防止内存泄漏）
+     * 每 60 秒扫描一次，清除超过 contextTTL 的条目
+     */
+    _ensureContextCleanup() {
+        if (this._contextCleanupTimer) return;
+        this._contextCleanupTimer = setInterval(() => {
+            const now = Date.now();
+            let cleaned = 0;
+            for (const [id, ctx] of this.requestContext) {
+                if (now - (ctx._createdAt || 0) > this.contextTTL) {
+                    this.requestContext.delete(id);
+                    cleaned++;
+                }
+            }
+            if (cleaned > 0) {
+                this.log('warn', [`[Logger] Cleaned ${cleaned} stale request context(s) (TTL: ${this.contextTTL}ms)`]);
+            }
+            // 当 Map 为空时停止定时器
+            if (this.requestContext.size === 0) {
+                clearInterval(this._contextCleanupTimer);
+                this._contextCleanupTimer = null;
+            }
+        }, 60_000);
+        // 不阻止进程退出
+        if (this._contextCleanupTimer.unref) {
+            this._contextCleanupTimer.unref();
+        }
     }
 
     /**
@@ -310,6 +365,10 @@ class Logger {
      * 关闭日志流
      */
     close() {
+        if (this._contextCleanupTimer) {
+            clearInterval(this._contextCleanupTimer);
+            this._contextCleanupTimer = null;
+        }
         if (this.logStream && !this.logStream.destroyed) {
             this.logStream.end();
             this.logStream = null;

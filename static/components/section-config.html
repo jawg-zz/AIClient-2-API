@@ -10,9 +10,14 @@
                 <div class="form-group password-input-group">
                     <label for="apiKey" data-i18n="config.apiKey">API密钥</label>
                     <div class="password-input-wrapper">
-                        <input type="password" id="apiKey" class="form-control" data-i18n="config.apiKeyPlaceholder" placeholder="请输入API密钥" autocomplete="off">
-                        <button type="button" class="password-toggle" data-target="apiKey" aria-label="显示/隐藏密码">
-                            <i class="fas fa-eye" aria-hidden="true"></i>
+                        <div class="input-with-toggle">
+                            <input type="password" id="apiKey" class="form-control" data-i18n="config.apiKeyPlaceholder" placeholder="请输入API密钥" autocomplete="off">
+                            <button type="button" class="password-toggle" data-target="apiKey" aria-label="显示/隐藏密码">
+                                <i class="fas fa-eye" aria-hidden="true"></i>
+                            </button>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-secondary generate-key-btn" id="generateApiKey" data-i18n-title="config.apiKey.generateTitle" title="自动生成API密钥">
+                            <i class="fas fa-magic"></i> <span data-i18n="config.apiKey.generate">生成</span>
                         </button>
                     </div>
                 </div>
@@ -128,6 +133,33 @@
                     </div>
                     <small class="form-text" data-i18n="config.proxy.enabledProvidersNote">点击选择需要通过代理访问的提供商，未选中的提供商将直接连接</small>
                 </div>
+                <hr>
+                <div class="config-row">
+                    <div class="form-group">
+                        <label data-i18n="config.proxy.tlsSidecarEnabled">TLS 指纹伪装 (uTLS Sidecar)</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="tlsSidecarEnabled">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label for="tlsSidecarPort" data-i18n="config.proxy.tlsSidecarPort">Sidecar 端口</label>
+                        <input type="number" id="tlsSidecarPort" class="form-control" min="1024" max="65535" value="9090">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="tlsSidecarProxyUrl" data-i18n="config.proxy.tlsSidecarProxyUrl">Sidecar 上游代理</label>
+                    <input type="text" id="tlsSidecarProxyUrl" class="form-control" data-i18n-placeholder="config.proxy.urlPlaceholder" placeholder="例如: http://127.0.0.1:7890">
+                    <small class="form-text" data-i18n="config.proxy.urlNote">TLS Sidecar 专用上游代理，留空则不使用代理</small>
+                </div>
+                <div class="form-group pool-section">
+                    <label data-i18n="config.proxy.tlsSidecarEnabledProviders">启用 TLS Sidecar 的提供商</label>
+                    <div id="tlsSidecarProviders" class="provider-tags">
+                        <!-- 动态渲染 -->
+                    </div>
+                    <small class="form-text" data-i18n="config.proxy.enabledProvidersNote">点击选择需要通过 TLS Sidecar 访问的提供商</small>
+                </div>
+                <small class="form-text" data-i18n="config.proxy.tlsSidecarNote">启用后选中的提供商请求将通过 Go uTLS sidecar 转发，完美模拟 Chrome TLS/H2 指纹绕过 Cloudflare（需重启服务）</small>
             </div>
 
             <!-- 服务治理与高可用 -->
@@ -303,10 +335,12 @@
                 <div class="form-group">
                     <label for="adminPassword" data-i18n="config.advanced.adminPassword">后台登录密码</label>
                     <div class="password-input-wrapper">
-                        <input type="password" id="adminPassword" class="form-control" autocomplete="new-password">
-                        <button type="button" class="password-toggle" data-target="adminPassword" aria-label="显示/隐藏密码">
-                            <i class="fas fa-eye" aria-hidden="true"></i>
-                        </button>
+                        <div class="input-with-toggle">
+                            <input type="password" id="adminPassword" class="form-control" autocomplete="new-password">
+                            <button type="button" class="password-toggle" data-target="adminPassword" aria-label="显示/隐藏密码">
+                                <i class="fas fa-eye" aria-hidden="true"></i>
+                            </button>
+                        </div>
                     </div>
                     <small class="form-text" data-i18n="config.advanced.adminPasswordNote">修改后需要重新登录</small>
                 </div>

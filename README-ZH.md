@@ -30,20 +30,19 @@
 > - 感谢阮一峰老师在 [周刊 359 期](https://www.ruanyifeng.com/blog/2025/08/weekly-issue-359.html) 的推荐
 >
 > **📅 版本更新日志**
->
+> 
 > <details>
 > <summary>点击展开查看详细版本历史</summary>
->
+> 
+> - **2026.03.02** - 新增 Grok 协议支持，支持通过 Cookie/SSO 方式访问 xAI Grok 系列模型（Grok 3/4），支持多模态输入、图片/视频生成、自动 token 刷新及流式输出
 > - **2026.01.26** - 新增 Codex 协议支持：支持 OpenAI Codex OAuth 授权接入
 > - **2026.01.25** - 增强 AI 监控插件：支持监控 AI 协议转换前后的请求参数和响应。优化日志管理：统一日志格式，可视化配置
 > - **2026.01.15** - 优化提供商池管理器：新增异步刷新队列机制、缓冲队列去重、全局并发控制，支持节点预热和自动过期检测
-> - **2026.01.07** - 新增 iFlow 协议支持，通过 OAuth 认证方式访问 Qwen、Kimi、DeepSeek 和 GLM 系列模型，支持自动 token 刷新功能
-> - **2026.01.03** - 新增主题切换功能并优化提供商池初始化，移除使用提供商默认配置的降级策略
+> > - **2026.01.03** - 新增主题切换功能并优化提供商池初始化，移除使用提供商默认配置的降级策略
 > - **2025.12.30** - 添加主进程管理和自动更新功能
 > - **2025.12.25** - 配置文件统一管理：所有配置集中到 `configs/` 目录，Docker 用户需更新挂载路径为 `-v "本地路径:/app/configs"`
 > - **2025.12.11** - Docker 镜像自动构建并发布到 Docker Hub: [justlikemaki/aiclient-2-api](https://hub.docker.com/r/justlikemaki/aiclient-2-api)
 > - **2025.11.30** - 新增 Antigravity 协议支持，支持通过 Google 内部接口访问 Gemini 3 Pro、Claude Sonnet 4.5 等模型
-> - **2025.11.16** - 新增 Ollama 协议支持，统一接口访问所有支持的模型（Claude、Gemini、Qwen、OpenAI等）
 > - **2025.11.11** - 新增 Web UI 管理控制台，支持实时配置管理和健康状态监控
 > - **2025.11.06** - 新增对 Gemini 3 预览版的支持，增强模型兼容性和性能优化
 > - **2025.10.18** - Kiro 开放注册，新用户赠送 500 额度，已完整支持 Claude Sonnet 4.5
@@ -60,13 +59,14 @@
 ## 💡 核心优势
 
 ### 🎯 统一接入，一站式管理
-*   **多模型统一接口**：通过标准 OpenAI 兼容协议，一次配置即可接入 Gemini、Claude、Qwen Code、Kimi K2、MiniMax M2 等主流大模型
+*   **多模型统一接口**：通过标准 OpenAI 兼容协议，一次配置即可接入 Gemini、Claude、Grok、Qwen Code、Kimi K2、MiniMax M2 等主流大模型
 *   **灵活切换机制**：Path 路由、支持通过启动参数、环境变量三种方式动态切换模型，满足不同场景需求
 *   **零成本迁移**：完全兼容 OpenAI API 规范，Cherry-Studio、NextChat、Cline 等工具无需修改即可使用
 *   **多协议智能转换**：支持 OpenAI、Claude、Gemini 三大协议间的智能转换，实现跨协议模型调用
 
 ### 🚀 突破限制，提升效率
 *   **绕过官方限制**：利用 OAuth 授权机制，有效突破 Gemini, Antigravity 等服务的免费 API 速率和配额限制
+*   **TLS 指纹绕过**：内置 TLS Sidecar (Go uTLS) 模拟浏览器特征，有效绕过 Grok 等服务的 Cloudflare 403 封锁
 *   **免费高级模型**：通过 Kiro API 模式免费使用 Claude Opus 4.5，通过 Qwen OAuth 模式使用 Qwen3 Coder Plus，降低使用成本
 *   **账号池智能调度**：支持多账号轮询、自动故障转移和配置降级，确保 99.9% 服务可用性
 
@@ -91,7 +91,6 @@
   - [📋 核心功能](#-核心功能)
 - [🔐 授权配置指南](#-授权配置指南)
 - [📁 授权文件存储路径](#-授权文件存储路径)
-- [🦙 Ollama 协议使用示例](#-ollama-协议使用示例)
 - [⚙️ 高级配置](#高级配置)
 - [❓ 常见问题](#-常见问题)
 - [📄 开源许可](#-开源许可)
@@ -109,12 +108,12 @@
 #### 🐳 Docker 快捷启动 (推荐)
 
 ```bash
-docker run -d -p 3000:3000 -p 8085-8087:8085-8087 -p 1455:1455 -p 19876-19880:19876-19880 --restart=always -v "指定路径:/app/configs" --name aiclient2api justlikemaki/aiclient-2-api
+docker run -d -p 3000:3000 -p 8085-8086:8085-8086 -p 1455:1455 -p 19876-19880:19876-19880 --restart=always -v "指定路径:/app/configs" --name aiclient2api justlikemaki/aiclient-2-api
 ```
 
 **参数说明**：
 - `-d`：后台运行容器
-- `-p 3000:3000 ...`：端口映射。3000 为 Web UI，其余为 OAuth 回调端口（Gemini: 8085, Antigravity: 8086, iFlow: 8087, Codex: 1455, Kiro: 19876-19880）
+- `-p 3000:3000 ...`：端口映射。3000 为 Web UI，其余为 OAuth 回调端口（Gemini: 8085, Antigravity: 8086, Codex: 1455, Kiro: 19876-19880）
 - `--restart=always`：容器自动重启策略
 - `-v "指定路径:/app/configs"`：挂载配置目录（请将"指定路径"替换为实际路径，如 `/home/user/aiclient-configs`）
 - `--name aiclient2api`：容器名称
@@ -138,6 +137,13 @@ docker compose up -d
 *   **Linux/macOS**: `chmod +x install-and-run.sh && ./install-and-run.sh`
 *   **Windows**: 双击运行 `install-and-run.bat`
 
+> **💡 如果脚本运行失败，可以尝试手动安装依赖并启动：**
+> ```bash
+> npm install
+> npm start
+> ```
+
+
 #### 2. 访问控制台
 服务器启动后，打开浏览器访问：
 👉 [**http://localhost:3000**](http://localhost:3000)
@@ -149,6 +155,15 @@ docker compose up -d
 *   ✅ 填入各提供商的 API Key 或上传 OAuth 凭据文件
 *   ✅ 实时切换默认模型提供商
 *   ✅ 监控健康状态和实时请求日志
+
+#### 4. 本地环境准备 (非 Docker 用户)
+如果您是在本地直接运行（通过脚本或 Node.js），且需要绕过 Grok 等服务的 TLS 检测，请务必：
+*   ✅ **安装 Go 语言环境**：前往 [Go 官网](https://go.dev/) 下载并安装 (1.20+)。
+*   ✅ **手动编译 Sidecar**：执行以下命令编译 TLS 代理组件：
+    ```bash
+    cd tls-sidecar && go build -o tls-sidecar && cd ..
+    ```
+    *注意：若未编译此二进制文件，TLS Sidecar 功能将因找不到执行文件而无法启动。*
 
 #### 脚本执行示例
 ```
@@ -202,6 +217,7 @@ docker compose up -d
 
 #### 最新模型支持
 无缝支持以下最新大模型，仅需在 Web UI 或 [`configs/config.json`](./configs/config.json) 中配置相应的端点：
+*   **Grok 3 / Grok 4** - xAI 旗舰模型，现已通过 Grok Cookie/SSO 支持，支持思考模型、图片生成及视频生成
 *   **Claude 4.5 Opus** - Anthropic 史上最强模型，现已通过 Kiro, Antigravity 支持
 *   **Gemini 3 Pro** - Google 下一代架构预览版，现已通过 Gemini, Antigravity 支持
 *   **Qwen3 Coder Plus** - 阿里通义千问最新代码专用模型，现已通过Qwen Code 支持
@@ -289,18 +305,20 @@ curl http://localhost:3000/claude-kiro-oauth/v1/chat/completions \
 - `budget_tokens` 被限制在 `[1024, 24576]` 之间（如果省略或无效，默认值为 `20000`）。
 - Token 获取/刷新/池轮换机制保持不变。
 
-#### iFlow OAuth 配置
-1. **首次授权**：在 Web UI 的"配置管理"或"提供商池"页面，点击 iFlow 的"生成授权"按钮
-2. **手机登录**：系统将打开 iFlow 授权页面，使用手机号完成登录验证
-3. **自动保存**：授权成功后，系统会自动获取 API Key 并保存凭据
-4. **支持模型**：Qwen3 系列、Kimi K2、DeepSeek V3/R1、GLM-4.6/4.7 等
-5. **自动刷新**：系统会在 Token 即将过期时自动刷新，无需手动干预
-
 #### Codex OAuth 配置
 1. **生成授权**：在 Web UI 的"提供商池"或"配置管理"页面，点击 Codex 的"生成授权"按钮
 2. **浏览器登录**：系统将打开 OpenAI Codex 授权页面，完成 OAuth 登录
 3. **自动保存**：授权成功后，系统会自动保存 Codex 的 OAuth 凭据文件
 4. **回调端口**：确保 OAuth 回调端口 `1455` 未被占用
+
+#### Grok Cookie/SSO 配置
+1. **获取 SSO 令牌**：登录 [Grok 官网](https://grok.com/)，在浏览器开发者工具的 Application -> Cookies 中复制 `sso` 的值
+2. **填入配置**：在 Web UI 的“配置管理”或直接修改配置文件，将令牌填入 `GROK_COOKIE_TOKEN`
+3. **支持功能**：
+   - 聊天与思考模型（Grok 3 Thinking）
+   - 图片生成（Grok Imagine）
+   - 视频生成（Grok Video）
+4. **注意事项**：确保 `GROK_USER_AGENT` 与您获取 Cookie 时使用的浏览器一致以避免被拦截
 
 #### 账号池管理配置
 1. **创建号池配置文件**：参考 [provider_pools.json.example](./configs/provider_pools.json.example) 创建配置文件
@@ -323,7 +341,6 @@ curl http://localhost:3000/claude-kiro-oauth/v1/chat/completions \
 | **Kiro** | `~/.aws/sso/cache/kiro-auth-token.json` | Kiro 认证令牌 |
 | **Qwen** | `~/.qwen/oauth_creds.json` | Qwen OAuth 凭据 |
 | **Antigravity** | `~/.antigravity/oauth_creds.json` | Antigravity OAuth 凭据 (支持 Claude 4.5 Opus) |
-| **iFlow** | `~/.iflow/oauth_creds.json` | iFlow OAuth 凭据 (支持 Qwen、Kimi、DeepSeek、GLM) |
 | **Codex** | `~/.codex/oauth_creds.json` | Codex OAuth 凭据 |
 
 > **说明**：`~` 表示用户主目录（Windows: `C:\Users\用户名`，Linux/macOS: `/home/用户名` 或 `/Users/用户名`）
@@ -331,40 +348,6 @@ curl http://localhost:3000/claude-kiro-oauth/v1/chat/completions \
 > **自定义路径**：可通过配置文件中的相关参数或环境变量指定自定义存储位置
 
 </details>
-
----
-
-### 🦙 Ollama 协议使用示例
-
-本项目支持 Ollama 协议，可以通过统一接口访问所有支持的模型。Ollama 端点提供 `/api/tags`、`/api/chat`、`/api/generate` 等标准接口。
-
-**Ollama API 调用示例**：
-
-1. **列出所有可用模型**：
-```bash
-curl http://localhost:3000/ollama/api/tags \
-  -H "Authorization: Bearer your-api-key"
-```
-
-2. **聊天接口**：
-```bash
-curl http://localhost:3000/ollama/api/chat \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-api-key" \
-  -d '{
-    "model": "[Claude] claude-sonnet-4.5",
-    "messages": [
-      {"role": "user", "content": "你好"}
-    ]
-  }'
-```
-
-3. **使用模型前缀指定提供商**：
-- `[Kiro]` - 使用 Kiro API 访问 Claude 模型
-- `[Claude]` - 使用 Claude 官方 API
-- `[Gemini CLI]` - 通过 Gemini CLI OAuth 访问
-- `[OpenAI]` - 使用 OpenAI 官方 API
-- `[Qwen CLI]` - 通过 Qwen OAuth 访问
 
 ---
 
@@ -393,12 +376,13 @@ curl http://localhost:3000/ollama/api/chat \
    ```json
    {
      "PROXY_URL": "http://127.0.0.1:7890",
-     "PROXY_ENABLED_PROVIDERS": [
-       "gemini-cli-oauth",
-       "gemini-antigravity",
-       "claude-kiro-oauth"
-     ]
-   }
+      "PROXY_ENABLED_PROVIDERS": [
+        "gemini-cli-oauth",
+        "gemini-antigravity",
+        "claude-kiro-oauth",
+        "grok-custom"
+      ]
+}
    ```
 
 3. **提供商自带代理端点**：某些提供商（如 OpenAI、Claude）支持配置已代理的 API 端点
@@ -516,6 +500,38 @@ curl http://localhost:3000/ollama/api/chat \
 - Fallback 只会在协议兼容的类型之间进行（如 `gemini-*` 之间、`claude-*` 之间）
 - 系统会自动检查目标 Provider Type 是否支持当前请求的模型
 
+#### 5. TLS Sidecar (Bypass 403/Cloudflare)
+
+针对 Grok 等对 TLS 指纹（JA3/JA4）校验严格的服务，本项目集成了基于 Go uTLS 的 Sidecar 代理，通过模拟浏览器 TLS 特征有效解决 403 Forbidden 报错。
+
+**配置说明**：
+
+1.  **编译二进制文件**：
+    由于 TLS 模拟需要 Go 语言支持，您需要先编译 sidecar：
+    ```bash
+    cd tls-sidecar
+    go build -o tls-sidecar
+    ```
+    *Windows 用户编译后请确保生成的 `tls-sidecar.exe` 位于 `tls-sidecar/` 或根目录。*
+
+2.  **启用配置**：
+    在 Web UI 的“配置管理”中开启 **TLS Sidecar**，或修改 `configs/config.json`：
+    ```json
+    {
+      "TLS_SIDECAR_ENABLED": true,
+      "TLS_SIDECAR_PORT": 9090
+    }
+    ```
+
+3.  **工作原理**：
+    - 开启后系统自动启动并管理该 Go 进程。
+    - 针对特定提供商（如 Grok）的请求会自动路由至 Sidecar。
+    - Sidecar 使用 Chrome 最新指纹进行 TLS 握手，支持 HTTP/2 自动协商。
+
+**注意事项**：
+- 本地运行需安装 Go 环境（1.20+）。
+- **Docker 用户**：镜像已内置编译好的二进制，只需在配置中开启即可，无需手动编译。
+
 </details>
 
 ---
@@ -531,7 +547,7 @@ curl http://localhost:3000/ollama/api/chat \
 
 **解决方案**：
 - **检查网络连接**：确保能够正常访问 Google、阿里云等服务
-- **检查端口占用**：OAuth 回调需要特定端口（Gemini: 8085, Antigravity: 8086, iFlow: 8087, Codex: 1455, Kiro: 19876-19880），确保这些端口未被占用
+- **检查端口占用**：OAuth 回调需要特定端口（Gemini: 8085, Antigravity: 8086, Codex: 1455, Kiro: 19876-19880），确保这些端口未被占用
 - **清除浏览器缓存**：尝试使用无痕模式或清除浏览器缓存后重试
 - **检查防火墙设置**：确保防火墙允许本地回调端口的访问
 - **Docker 用户**：确保已正确映射所有 OAuth 回调端口
@@ -628,7 +644,7 @@ kill -9 <PID>
 **问题描述**：调用 API 接口时返回 404 Not Found 错误。
 
 **解决方案**：
-- **检查接口路径**：确保使用正确的接口路径，如 `/v1/chat/completions`、`/ollama/api/chat` 等
+- **检查接口路径**：确保使用正确的接口路径，如 `/v1/chat/completions` 等
 - **检查客户端自动补全**：某些客户端（如 Cherry-Studio、NextChat）会自动在 Base URL 后追加路径（如 `/v1/chat/completions`），导致路径重复。请查看控制台中的实际请求 URL，移除多余的路径部分
 - **检查服务状态**：确认服务已正常启动，访问 `http://localhost:3000` 查看 Web UI
 - **检查端口配置**：确保请求发送到正确的端口（默认 3000）
@@ -659,6 +675,7 @@ kill -9 <PID>
 **问题描述**：API 请求返回 403 Forbidden 错误。
 
 **解决方案**：
+- **开启 TLS Sidecar**：针对 Grok 等服务，403 通常是因为 TLS 指纹被屏蔽。请参考 [高级配置 - TLS Sidecar](#5-tls-sidecar-bypass-403cloudflare) 开启并编译 Sidecar。
 - **检查节点状态**：如果在 Web UI 的"提供商池"页面中看到节点状态正常（健康检查通过），则可以忽略此报错，系统会自动处理
 - **检查账号权限**：确认使用的账号有权限访问请求的模型或服务
 - **检查 API Key 权限**：某些提供商的 API Key 可能有访问范围限制，确保 Key 有足够权限

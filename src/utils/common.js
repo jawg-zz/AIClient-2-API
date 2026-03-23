@@ -55,7 +55,6 @@ export const MODEL_PROTOCOL_PREFIX = {
     OPENAI: 'openai',
     OPENAI_RESPONSES: 'openaiResponses',
     CLAUDE: 'claude',
-    OLLAMA: 'ollama',
     CODEX: 'codex',
     FORWARD: 'forward',
     GROK: 'grok',
@@ -74,6 +73,7 @@ export const MODEL_PROVIDER = {
     CODEX_API: 'openai-codex-oauth',
     FORWARD_API: 'forward-api',
     GROK_CUSTOM: 'grok-custom',
+    AUTO: 'auto',
 }
 
 /**
@@ -297,6 +297,7 @@ export async function handleStreamRequest(res, service, model, requestBody, from
     let fullResponseJson = '';
     let fullOldResponseJson = '';
     let responseClosed = false;
+    let anyDataSent = retryContext?.anyDataSent || false; // 跟踪是否已向客户端发送过任何数据
     
     // 重试上下文：包含 CONFIG 和重试计数
     // maxRetries: 凭证切换最大次数（跨凭证），默认 5 次
@@ -343,6 +344,8 @@ export async function handleStreamRequest(res, service, model, requestBody, from
         requestBody.model = model;
         const nativeStream = await service.generateContentStream(model, requestBody);
         const addEvent = getProtocolPrefix(fromProvider) === MODEL_PROTOCOL_PREFIX.CLAUDE || getProtocolPrefix(fromProvider) === MODEL_PROTOCOL_PREFIX.OPENAI_RESPONSES;
+        // 为每个请求生成唯一 ID，用于在单例 converter 中隔离并发流状态
+        const streamRequestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
         for await (const nativeChunk of nativeStream) {
             // 检查客户端是否已断开连接
@@ -359,7 +362,7 @@ export async function handleStreamRequest(res, service, model, requestBody, from
 
             // Convert the complete chunk object to the client's format (fromProvider), if necessary.
             const chunkToSend = needsConversion
-                ? convertData(nativeChunk, 'streamChunk', toProvider, fromProvider, model)
+                ? convertData(nativeChunk, 'streamChunk', toProvider, fromProvider, model, streamRequestId)
                 : nativeChunk;
 
             // 监控钩子：流式响应分块
@@ -439,6 +442,7 @@ export async function handleStreamRequest(res, service, model, requestBody, from
                     if (!clientDisconnected.value && !res.writableEnded) {
                         try {
                             res.write(`event: ${chunk.type}\n`);
+                            anyDataSent = true;
                         } catch (writeErr) {
                             logger.error('[Stream] Failed to write event:', writeErr.message);
                             clientDisconnected.value = true;
@@ -453,6 +457,7 @@ export async function handleStreamRequest(res, service, model, requestBody, from
                 if (!clientDisconnected.value && !res.writableEnded) {
                     try {
                         res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+                        anyDataSent = true;
                     } catch (writeErr) {
                         logger.error('[Stream] Failed to write data:', writeErr.message);
                         clientDisconnected.value = true;
@@ -482,9 +487,9 @@ export async function handleStreamRequest(res, service, model, requestBody, from
             return;
         }
         
-        // 如果已经发送了内容，不进行重试（避免响应数据损坏）
-        if (fullResponseText.length > 0) {
-            logger.info(`[Stream Retry] Cannot retry: ${fullResponseText.length} bytes already sent to client`);
+        // 如果已经发送了数据（包括 metadata），不进行重试（避免响应数据损坏或顺序错误）
+        if (anyDataSent) {
+            logger.info(`[Stream Retry] Cannot retry: data already sent to client`);
             // 直接发送错误并结束
             const errorPayload = createStreamErrorResponse(error, fromProvider);
             if (!res.writableEnded) {
@@ -553,7 +558,8 @@ export async function handleStreamRequest(res, service, model, requestBody, from
                         CONFIG,
                         currentRetry: currentRetry + 1,
                         maxRetries,
-                        clientDisconnected  // 传递断开状态
+                        clientDisconnected,  // 传递断开状态
+                        anyDataSent          // 传递数据发送状态
                     };
                     
                     // 递归调用，使用新的服务
@@ -795,49 +801,74 @@ export async function handleUnaryRequest(res, service, model, requestBody, fromP
  * and sends the JSON response.
  * @param {http.IncomingMessage} req The HTTP request object.
  * @param {http.ServerResponse} res The HTTP response object.
+ * @param {Object} service - The API service instance.
  * @param {string} endpointType The type of endpoint being called (e.g., OPENAI_MODEL_LIST).
  * @param {Object} CONFIG - The server configuration object.
+ * @param {Object} providerPoolManager - The provider pool manager instance.
+ * @param {string} pooluuid - The selected provider UUID.
  */
 export async function handleModelListRequest(req, res, service, endpointType, CONFIG, providerPoolManager, pooluuid) {
-    try{
+    try {
         const clientProviderMap = {
             [ENDPOINT_TYPE.OPENAI_MODEL_LIST]: MODEL_PROTOCOL_PREFIX.OPENAI,
             [ENDPOINT_TYPE.GEMINI_MODEL_LIST]: MODEL_PROTOCOL_PREFIX.GEMINI,
         };
 
-
         const fromProvider = clientProviderMap[endpointType];
-        const toProvider = CONFIG.MODEL_PROVIDER;
-
+        
         if (!fromProvider) {
             throw new Error(`Unsupported endpoint type for model list: ${endpointType}`);
         }
 
-        // 1. Get the model list in the backend's native format.
-        const nativeModelList = await service.listModels();
-                
-        // 2. Convert the model list to the client's expected format, if necessary.
-        let clientModelList = nativeModelList;
-        if (!getProtocolPrefix(toProvider).includes(getProtocolPrefix(fromProvider))) {
-            logger.info(`[ModelList Convert] Converting model list from ${toProvider} to ${fromProvider}`);
-            clientModelList = convertData(nativeModelList, 'modelList', toProvider, fromProvider);
+        let clientModelList;
+
+        // --- 核心逻辑: auto 路由模式下的模型聚合 ---
+        if (CONFIG.MODEL_PROVIDER === MODEL_PROVIDER.AUTO && providerPoolManager) {
+            logger.info(`[ModelList] Aggregating models for 'auto' mode...`);
+            clientModelList = await providerPoolManager.getAllAvailableModels(endpointType);
         } else {
-            logger.info(`[ModelList Convert] Model list format matches. No conversion needed.`);
+            // --- 单提供商逻辑 ---
+            const toProvider = CONFIG.MODEL_PROVIDER;
+
+            // service 可能未在上层预先注入（例如仅改了路径 provider 前缀），这里兜底获取
+            let resolvedService = service;
+            if (!resolvedService) {
+                const { getApiService } = await import('../services/service-manager.js');
+                resolvedService = await getApiService(CONFIG, null, { skipUsageCount: true });
+            }
+
+            if (!resolvedService || typeof resolvedService.listModels !== 'function') {
+                throw new Error(`[ModelList] Service adapter is unavailable or does not implement listModels() for provider: ${toProvider}`);
+            }
+
+            // 1. Get the model list in the backend's native format.
+            const nativeModelList = await resolvedService.listModels();
+
+            // 2. Convert the model list to the client's expected format, if necessary.
+            clientModelList = nativeModelList;
+            if (!getProtocolPrefix(toProvider).includes(getProtocolPrefix(fromProvider))) {
+                logger.info(`[ModelList Convert] Converting model list from ${toProvider} to ${fromProvider}`);
+                clientModelList = convertData(nativeModelList, 'modelList', toProvider, fromProvider);
+            } else {
+                logger.info(`[ModelList Convert] Model list format matches. No conversion needed.`);
+            }
         }
 
-        logger.info(`[ModelList Response] Sending model list to client: ${JSON.stringify(clientModelList)}`);
+        // logger.info(`[ModelList Response] Sending model list to client: ${JSON.stringify(clientModelList)}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(clientModelList));
     } catch (error) {
         logger.error('\n[Server] Error during model list processing:', error.stack);
-        if (providerPoolManager) {
-            // 如果是号池模式，并且请求处理失败，则标记当前使用的提供者为不健康
-            providerPoolManager.markProviderUnhealthy(toProvider, {
-                uuid: pooluuid
-            }, error.message);
-        }
+        // if (providerPoolManager && pooluuid && CONFIG.MODEL_PROVIDER !== MODEL_PROVIDER.AUTO) {
+        //     // 如果是号池模式（且非 auto 模式），并且请求处理失败，则标记当前使用的提供者为不健康
+        //     providerPoolManager.markProviderUnhealthy(CONFIG.MODEL_PROVIDER, {
+        //         uuid: pooluuid
+        //     }, error.message);
+        // }
+        handleError(res, error, CONFIG.MODEL_PROVIDER);
     }
 }
+
 
 /**
  * Handles requests for content generation (both unary and streaming). This function
@@ -882,17 +913,20 @@ export async function handleContentGenerationRequest(req, res, service, endpoint
 
     let actualCustomName = CONFIG.customName;
 
-    // 2.5. 如果使用了提供商池，根据模型重新选择提供商（支持 Fallback）
-    // 注意：这里开启 acquireSlot: true，会占用并发名额或进入队列
-    if (providerPoolManager && CONFIG.providerPools && CONFIG.providerPools[CONFIG.MODEL_PROVIDER]) {
+    // 2.5. 根据模型选择服务适配器：
+    // - service 缺失时（例如上游未预先注入）进行兜底选择
+    // - 使用号池/AUTO 时按模型重选并支持 fallback
+    // 注意：仅在号池场景开启 acquireSlot，占用并发名额或进入队列
+    const shouldSelectByPool = providerPoolManager && (CONFIG.MODEL_PROVIDER === MODEL_PROVIDER.AUTO || (CONFIG.providerPools && CONFIG.providerPools[CONFIG.MODEL_PROVIDER]));
+    if (!service || shouldSelectByPool) {
         const { getApiServiceWithFallback } = await import('../services/service-manager.js');
-        const result = await getApiServiceWithFallback(CONFIG, model, { acquireSlot: true });
-        
+        const result = await getApiServiceWithFallback(CONFIG, model, { acquireSlot: shouldSelectByPool });
+
         service = result.service;
         toProvider = result.actualProviderType;
         actualUuid = result.uuid || pooluuid;
         actualCustomName = result.serviceConfig?.customName || CONFIG.customName;
-        
+
         // 如果发生了模型级别的 fallback，需要更新请求使用的模型
         if (result.actualModel && result.actualModel !== model) {
             logger.info(`[Content Generation] Model Fallback: ${model} -> ${result.actualModel}`);
@@ -902,7 +936,7 @@ export async function handleContentGenerationRequest(req, res, service, endpoint
         if (result.isFallback) {
             logger.info(`[Content Generation] Fallback activated: ${CONFIG.MODEL_PROVIDER} -> ${toProvider} (uuid: ${actualUuid})`);
         } else {
-            logger.info(`[Content Generation] Re-selected service adapter based on model: ${model}`);
+            logger.info(`[Content Generation] Selected service adapter based on model: ${model}`);
         }
     }
 
@@ -911,6 +945,11 @@ export async function handleContentGenerationRequest(req, res, service, endpoint
     // 将 _monitorRequestId 注入到 requestBody 中，以便在 service 内部访问
     if (CONFIG._monitorRequestId) {
         processedRequestBody._monitorRequestId = CONFIG._monitorRequestId;
+    }
+    
+    // 将 requestBaseUrl 注入到 requestBody 中，以便在转换器中使用
+    if (CONFIG.requestBaseUrl) {
+        processedRequestBody._requestBaseUrl = CONFIG.requestBaseUrl;
     }
 
     // fs.writeFile('originalRequestBody'+Date.now()+'.json', JSON.stringify(originalRequestBody));
@@ -951,21 +990,19 @@ export async function handleContentGenerationRequest(req, res, service, endpoint
         await handleUnaryRequest(res, service, model, processedRequestBody, fromProvider, toProvider, CONFIG.PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, actualUuid, actualCustomName, retryContext);
     }
 
-    if (CONFIG?._monitorRequestId) {
-        // 执行插件钩子：内容生成后
-        try {
-            const pluginManager = getPluginManager();
-            await pluginManager.executeHook('onContentGenerated', {
-                ...CONFIG,
-                originalRequestBody,
-                processedRequestBody,
-                fromProvider,
-                toProvider,
-                model,
-                isStream
-            });
-        } catch (e) { /* 静默失败，不影响主流程 */ }
-    }
+    // 执行插件钩子：内容生成后
+    try {
+        const pluginManager = getPluginManager();
+        await pluginManager.executeHook('onContentGenerated', {
+            ...CONFIG,
+            originalRequestBody,
+            processedRequestBody,
+            fromProvider,
+            toProvider,
+            model,
+            isStream
+        });
+    } catch (e) { /* 静默失败，不影响主流程 */ }
 }
 
 /**
@@ -1204,35 +1241,6 @@ function _getProviderSpecificSuggestions(statusCode, provider) {
                     'Check your request format and parameters',
                     'Verify the model name is a valid Claude model',
                     'Ensure the message format follows Anthropic API specifications'
-                ]
-            };
-            
-        case MODEL_PROTOCOL_PREFIX.OLLAMA:
-            return {
-                auth: [
-                    'Ollama typically does not require authentication',
-                    'If using a custom setup, verify your credentials',
-                    'Check if the Ollama server requires authentication'
-                ],
-                permission: [
-                    'Verify the Ollama server is accessible',
-                    'Check if the requested model is available locally',
-                    'Ensure the Ollama server allows the requested operation'
-                ],
-                rateLimit: [
-                    'The local Ollama server may be overloaded',
-                    'Try reducing concurrent requests',
-                    'Consider increasing server resources if running locally'
-                ],
-                serverError: [
-                    'Check if the Ollama server is running',
-                    'Verify the server address and port are correct',
-                    'Check Ollama server logs for detailed error information'
-                ],
-                clientError: [
-                    'Check your request format and parameters',
-                    'Verify the model name is available in your Ollama installation',
-                    'Try pulling the model first with: ollama pull <model-name>'
                 ]
             };
             

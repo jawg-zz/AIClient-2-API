@@ -1,3 +1,16 @@
+# ── Stage 1: 编译 Go TLS sidecar ──
+FROM golang:1.22-alpine AS sidecar-builder
+
+RUN apk add --no-cache git
+
+WORKDIR /build
+COPY tls-sidecar/go.mod tls-sidecar/go.sum* ./
+RUN go mod download || true
+
+COPY tls-sidecar/ ./
+RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o tls-sidecar .
+
+# ── Stage 2: Node.js 应用 ──
 # 使用官方Node.js运行时作为基础镜像
 # 选择20-alpine版本以满足undici包的要求（需要Node.js >=20.18.1）
 FROM node:20-alpine
@@ -6,8 +19,8 @@ FROM node:20-alpine
 LABEL maintainer="AIClient2API Team"
 LABEL description="Docker image for AIClient2API server"
 
-# 安装必要的系统工具（tar 用于更新功能，git 用于版本检查）
-RUN apk add --no-cache tar git
+# 安装必要的系统工具（tar 用于更新功能，git 用于版本检查，procps 用于系统监控）
+RUN apk add --no-cache tar git procps
 
 # 设置工作目录
 WORKDIR /app
@@ -22,6 +35,11 @@ RUN npm install
 
 # 复制源代码
 COPY . .
+
+# 从 sidecar 构建阶段复制二进制
+# 放在 COPY . . 之后是为了确保不会被本地的空目录或旧二进制文件覆盖
+COPY --from=sidecar-builder /build/tls-sidecar /app/tls-sidecar/tls-sidecar
+RUN chmod +x /app/tls-sidecar/tls-sidecar
 
 USER root
 

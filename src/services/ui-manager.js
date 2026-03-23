@@ -64,7 +64,7 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
     }
     
     // Handle UI management API requests (需要token验证，除了登录接口、健康检查和Events接口)
-    if (pathParam.startsWith('/api/') && pathParam !== '/api/login' && pathParam !== '/api/health' && pathParam !== '/api/events' ) {
+    if (pathParam.startsWith('/api/') && pathParam !== '/api/login' && pathParam !== '/api/health' && pathParam !== '/api/events' && pathParam !== '/api/grok/assets') {
         // 检查token验证
         const isAuth = await auth.checkAuth(req);
         if (!isAuth) {
@@ -246,6 +246,13 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
         return await uploadConfigApi.handleViewConfigFile(req, res, filePath);
     }
 
+    // Download specific configuration file
+    const downloadConfigMatch = pathParam.match(/^\/api\/upload-configs\/download\/(.+)$/);
+    if (method === 'GET' && downloadConfigMatch) {
+        const filePath = decodeURIComponent(downloadConfigMatch[1]);
+        return await uploadConfigApi.handleDownloadConfigFile(req, res, filePath);
+    }
+
     // Delete specific configuration file
     const deleteConfigMatch = pathParam.match(/^\/api\/upload-configs\/delete\/(.+)$/);
     if (method === 'DELETE' && deleteConfigMatch) {
@@ -317,6 +324,10 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
 
     if (method === 'POST' && pathParam === '/api/gemini/batch-import-tokens') {
         return await oauthApi.handleBatchImportGeminiTokens(req, res);
+    }
+
+    if (method === 'POST' && pathParam === '/api/codex/batch-import-tokens') {
+        return await oauthApi.handleBatchImportCodexTokens(req, res);
     }
 
     // Import AWS SSO credentials for Kiro

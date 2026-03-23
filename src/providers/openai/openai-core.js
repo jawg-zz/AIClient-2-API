@@ -2,8 +2,8 @@ import axios from 'axios';
 import logger from '../../utils/logger.js';
 import * as http from 'http';
 import * as https from 'https';
-import { configureAxiosProxy } from '../../utils/proxy-utils.js';
-import { isRetryableNetworkError } from '../../utils/common.js';
+import { configureAxiosProxy, configureTLSSidecar } from '../../utils/proxy-utils.js';
+import { isRetryableNetworkError, MODEL_PROVIDER } from '../../utils/common.js';
 
 // Assumed OpenAI API specification service for interacting with third-party models
 export class OpenAIApiService {
@@ -47,9 +47,13 @@ export class OpenAIApiService {
         }
         
         // 配置自定义代理
-        configureAxiosProxy(axiosConfig, config, 'openai-custom');
+        configureAxiosProxy(axiosConfig, config, MODEL_PROVIDER.OPENAI_CUSTOM);
         
         this.axiosInstance = axios.create(axiosConfig);
+    }
+
+    _applySidecar(axiosConfig) {
+        return configureTLSSidecar(axiosConfig, this.config, MODEL_PROVIDER.OPENAI_CUSTOM, this.baseUrl);
     }
 
     async callApi(endpoint, body, isRetry = false, retryCount = 0) {
@@ -57,7 +61,13 @@ export class OpenAIApiService {
         const baseDelay = this.config.REQUEST_BASE_DELAY || 1000;  // 1 second base delay
 
         try {
-            const response = await this.axiosInstance.post(endpoint, body);
+            const axiosConfig = {
+                method: 'post',
+                url: endpoint,
+                data: body
+            };
+            this._applySidecar(axiosConfig);
+            const response = await this.axiosInstance.request(axiosConfig);
             return response.data;
         } catch (error) {
             const status = error.response?.status;
@@ -111,9 +121,14 @@ export class OpenAIApiService {
         const streamRequestBody = { ...body, stream: true };
 
         try {
-            const response = await this.axiosInstance.post(endpoint, streamRequestBody, {
+            const axiosConfig = {
+                method: 'post',
+                url: endpoint,
+                data: streamRequestBody,
                 responseType: 'stream'
-            });
+            };
+            this._applySidecar(axiosConfig);
+            const response = await this.axiosInstance.request(axiosConfig);
 
             const stream = response.data;
             let buffer = '';
@@ -194,6 +209,9 @@ export class OpenAIApiService {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
         }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
+        }
 
         return this.callApi('/chat/completions', requestBody);
     }
@@ -203,6 +221,9 @@ export class OpenAIApiService {
         if (requestBody._monitorRequestId) {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
+        }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
         }
 
         yield* this.streamApi('/chat/completions', requestBody);

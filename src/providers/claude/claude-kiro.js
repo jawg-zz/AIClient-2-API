@@ -8,8 +8,14 @@ import * as crypto from 'crypto';
 import * as http from 'http';
 import * as https from 'https';
 import { getProviderModels } from '../provider-models.js';
-import { countTokens } from '@anthropic-ai/tokenizer';
-import { configureAxiosProxy } from '../../utils/proxy-utils.js';
+import { 
+    countTextTokens as countTextTokensUtil, 
+    estimateInputTokens as estimateInputTokensUtil, 
+    countTokensAnthropic as countTokensUtil,
+    processContent as processContentUtil,
+    getContentText as getContentTextUtil
+} from '../../utils/token-utils.js';
+import { configureAxiosProxy, configureTLSSidecar } from '../../utils/proxy-utils.js';
 import { isRetryableNetworkError, MODEL_PROVIDER, formatExpiryLog } from '../../utils/common.js';
 import { getProviderPoolManager } from '../../services/service-manager.js';
 
@@ -32,7 +38,7 @@ const KIRO_CONSTANTS = {
     AXIOS_TIMEOUT: 120000, // 2 minutes timeout for normal requests
     TOKEN_REFRESH_TIMEOUT: 15000, // 15 seconds timeout for token refresh (shorter to avoid blocking)
     USER_AGENT: 'KiroIDE',
-    KIRO_VERSION: '0.8.140',
+    KIRO_VERSION: '0.11.63',
     CONTENT_TYPE_JSON: 'application/json',
     ACCEPT_JSON: 'application/json',
     AUTH_METHOD_SOCIAL: 'social',
@@ -51,8 +57,8 @@ const FULL_MODEL_MAPPING = {
     "claude-sonnet-4-6":"claude-sonnet-4.6",
     "claude-opus-4-5":"claude-opus-4.5",
     "claude-opus-4-5-20251101":"claude-opus-4.5",
-    "claude-sonnet-4-5": "CLAUDE_SONNET_4_5_20250929_V1_0",
-    "claude-sonnet-4-5-20250929": "CLAUDE_SONNET_4_5_20250929_V1_0"
+    "claude-sonnet-4-5": "claude-sonnet-4.5",
+    "claude-sonnet-4-5-20250929": "claude-sonnet-4.5"
 };
 
 // 只保留 KIRO_MODELS 中存在的模型映射
@@ -457,10 +463,12 @@ export class KiroApiService {
             headers: {
                 'Content-Type': KIRO_CONSTANTS.CONTENT_TYPE_JSON,
                 'Accept': KIRO_CONSTANTS.ACCEPT_JSON,
-                'amz-sdk-request': 'attempt=1; max=1',
+                'amz-sdk-invocation-id': uuidv4(),
+                'amz-sdk-request': 'attempt=1; max=3',
+                'x-amzn-codewhisperer-optout': true,
                 'x-amzn-kiro-agent-mode': 'vibe',
-                'x-amz-user-agent': `aws-sdk-js/1.0.0 KiroIDE-${kiroVersion}-${machineId}`,
-                'user-agent': `aws-sdk-js/1.0.0 ua/2.1 os/${osName} lang/js md/nodejs#${nodeVersion} api/codewhispererruntime#1.0.0 m/E KiroIDE-${kiroVersion}-${machineId}`,
+                'x-amz-user-agent': `aws-sdk-js/1.0.34 KiroIDE-${kiroVersion}-${machineId}`,
+                'user-agent': `aws-sdk-js/1.0.34 ua/2.1 os/${osName} lang/js md/nodejs#${nodeVersion} api/codewhispererstreaming#1.0.34 m/E KiroIDE-${kiroVersion}-${machineId}`,
                 'Connection': 'close'
             },
         };
@@ -479,6 +487,10 @@ export class KiroApiService {
         axiosConfig.headers.set('Content-Type', KIRO_CONSTANTS.CONTENT_TYPE_JSON);
         this.axiosSocialRefreshInstance = axios.create(axiosConfig);
         this.isInitialized = true;
+    }
+
+    _applySidecar(axiosConfig) {
+        return configureTLSSidecar(axiosConfig, this.config, MODEL_PROVIDER.KIRO_API);
     }
 
 /**
@@ -678,11 +690,20 @@ async saveCredentialsToFile(filePath, newData) {
             let response = null;
             // 使用更短的超时时间进行 token 刷新，避免阻塞其他请求
             const refreshConfig = { timeout: KIRO_CONSTANTS.TOKEN_REFRESH_TIMEOUT };
+            
+            const axiosConfig = {
+                method: 'post',
+                url: refreshUrl,
+                data: requestBody,
+                ...refreshConfig
+            };
+            this._applySidecar(axiosConfig);
+
             if (this.authMethod === KIRO_CONSTANTS.AUTH_METHOD_SOCIAL) {
-                response = await this.axiosSocialRefreshInstance.post(refreshUrl, requestBody, refreshConfig);
+                response = await this.axiosSocialRefreshInstance.request(axiosConfig);
                 logger.info('[Kiro Auth] Token refresh social response: ok');
             } else {
-                response = await this.axiosInstance.post(refreshUrl, requestBody, refreshConfig);
+                response = await this.axiosInstance.request(axiosConfig);
                 logger.info('[Kiro Auth] Token refresh idc response: ok');
             }
 
@@ -721,34 +742,34 @@ async saveCredentialsToFile(filePath, newData) {
 
 
     /**
+     * Count tokens for a given text using Claude's official tokenizer
+     * Static version for use without instance
+     */
+    static countTextTokens(text) {
+        return countTextTokensUtil(text);
+    }
+
+    /**
+     * Count tokens for a message request (compatible with Anthropic API)
+     * Static version for use without instance
+     */
+    static countTokens(requestBody) {
+        return countTokensUtil(requestBody);
+    }
+
+    /**
+     * Calculate input tokens from request body
+     * Static version for use without instance
+     */
+    static estimateInputTokens(requestBody) {
+        return estimateInputTokensUtil(requestBody);
+    }
+
+    /**
      * Extract text content from OpenAI message format
      */
     getContentText(message) {
-        if(message==null){
-            return "";
-        }
-        if (Array.isArray(message)) {
-            return message.map(part => {
-                if (typeof part === 'string') return part;
-                if (part && typeof part === 'object') {
-                    if (part.type === 'text' && part.text) return part.text;
-                    if (part.text) return part.text;
-                }
-                return '';
-            }).join('');
-        } else if (typeof message.content === 'string') {
-            return message.content;
-        } else if (Array.isArray(message.content)) {
-            return message.content.map(part => {
-                if (typeof part === 'string') return part;
-                if (part && typeof part === 'object') {
-                    if (part.type === 'text' && part.text) return part.text;
-                    if (part.text) return part.text;
-                }
-                return '';
-            }).join('');
-        }
-        return String(message.content || message);
+        return getContentTextUtil(message);
     }
 
     /**
@@ -757,22 +778,7 @@ async saveCredentialsToFile(filePath, newData) {
      * @returns {string} 处理后的文本
      */
     processContent(content) {
-        if (!content) return "";
-        if (typeof content === 'string') return content;
-        if (Array.isArray(content)) {
-            return content.map(part => {
-                if (typeof part === 'string') return part;
-                if (part && typeof part === 'object') {
-                    if (part.type === 'text') return part.text || "";
-                    if (part.type === 'thinking') return part.thinking || part.text || "";
-                    if (part.type === 'tool_result') return this.processContent(part.content);
-                    if (part.type === 'tool_use' && part.input) return JSON.stringify(part.input);
-                    if (part.text) return part.text;
-                }
-                return "";
-            }).join("");
-        }
-        return this.getContentText(content);
+        return processContentUtil(content);
     }
 
     _normalizeThinkingBudgetTokens(budgetTokens) {
@@ -1286,6 +1292,7 @@ async saveCredentialsToFile(filePath, newData) {
 
         const request = {
             conversationState: {
+                agentTaskType: "vibe",
                 chatTriggerType: KIRO_CONSTANTS.CHAT_TRIGGER_TYPE_MANUAL,
                 conversationId: conversationId,
                 currentMessage: {} // Will be populated as userInputMessage
@@ -1493,7 +1500,14 @@ async saveCredentialsToFile(filePath, newData) {
 
             // 当 model 以 kiro-amazonq 开头时，使用 amazonQUrl，否则使用 baseUrl
             const requestUrl = model.startsWith('amazonq') ? this.amazonQUrl : this.baseUrl;
-            const response = await this.axiosInstance.post(requestUrl, requestData, { headers });
+            const axiosConfig = {
+                method: 'post',
+                url: requestUrl,
+                data: requestData,
+                headers
+            };
+            this._applySidecar(axiosConfig);
+            const response = await this.axiosInstance.request(axiosConfig);
             return response;
         } catch (error) {
             const status = error.response?.status;
@@ -1776,6 +1790,9 @@ async saveCredentialsToFile(filePath, newData) {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
         }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
+        }
         
         // 检查 token 是否即将过期，如果是则推送到刷新队列
         if (this.isExpiryDateNear()) {
@@ -1986,10 +2003,15 @@ async saveCredentialsToFile(filePath, newData) {
 
         let stream = null;
         try {
-            const response = await this.axiosInstance.post(requestUrl, requestData, { 
+            const axiosConfig = {
+                method: 'post',
+                url: requestUrl,
+                data: requestData,
                 headers,
                 responseType: 'stream'
-            });
+            };
+            this._applySidecar(axiosConfig);
+            const response = await this.axiosInstance.request(axiosConfig);
 
             stream = response.data;
             let buffer = '';
@@ -2145,6 +2167,9 @@ async saveCredentialsToFile(filePath, newData) {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
         }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
+        }
         
         // 检查 token 是否即将过期，如果是则推送到刷新队列
         if (this.isExpiryDateNear()) {
@@ -2242,6 +2267,7 @@ async saveCredentialsToFile(filePath, newData) {
             let outputTokens = 0;
             const toolCalls = [];
             let currentToolCall = null; // 用于累积结构化工具调用
+            const toolUseBlockIndexes = new Map(); // toolUseId -> content block index
 
             const estimatedInputTokens = this.estimateInputTokens(requestBody);
 
@@ -2378,45 +2404,102 @@ async saveCredentialsToFile(filePath, newData) {
                     yield* pushEvents(events);
                 } else if (event.type === 'toolUse') {
                     const tc = event.toolUse;
+                    const toolEvents = [];
+
                     // 统计工具调用的内容到 totalContent（用于 token 计算）
-                    if (tc.name) {
-                        totalContent += tc.name;
-                    }
-                    if (tc.input) {
-                        totalContent += tc.input;
-                    }
+                    if (tc.name) totalContent += tc.name;
+                    if (tc.input) totalContent += tc.input;
+
                     // 工具调用事件（包含 name 和 toolUseId）
                     if (tc.name && tc.toolUseId) {
-                        // 检查是否是同一个工具调用的续传（相同 toolUseId）
+                        // 遇到工具调用时，立即关闭文本块，避免前端等待到流结束才看到 content_block_stop
+                        toolEvents.push(...stopBlock(streamState.textBlockIndex));
+
+                        // 同一工具调用续传
                         if (currentToolCall && currentToolCall.toolUseId === tc.toolUseId) {
-                            // 同一个工具调用，累积 input
                             currentToolCall.input += tc.input || '';
                         } else {
-                            // 不同的工具调用
-                            // 如果有未完成的工具调用，先保存它
+                            // 切换到新的工具调用前，先收尾旧调用
                             if (currentToolCall) {
+                                const prevBlockIndex = toolUseBlockIndexes.get(currentToolCall.toolUseId);
+                                let parsedInput = currentToolCall.input;
                                 try {
-                                    currentToolCall.input = JSON.parse(currentToolCall.input);
+                                    parsedInput = JSON.parse(currentToolCall.input);
                                 } catch (e) {
                                     // input 不是有效 JSON，保持原样
                                 }
-                                toolCalls.push(currentToolCall);
+                                toolCalls.push({
+                                    toolUseId: currentToolCall.toolUseId,
+                                    name: currentToolCall.name,
+                                    input: parsedInput
+                                });
+                                if (prevBlockIndex != null) {
+                                    toolEvents.push({ type: "content_block_stop", index: prevBlockIndex });
+                                    toolUseBlockIndexes.delete(currentToolCall.toolUseId);
+                                }
                             }
-                            // 开始新的工具调用
+
+                            const blockIndex = streamState.nextBlockIndex++;
+                            toolUseBlockIndexes.set(tc.toolUseId, blockIndex);
+                            toolEvents.push({
+                                type: "content_block_start",
+                                index: blockIndex,
+                                content_block: {
+                                    type: "tool_use",
+                                    id: tc.toolUseId || `tool_${uuidv4()}`,
+                                    name: tc.name,
+                                    input: {}
+                                }
+                            });
+
                             currentToolCall = {
                                 toolUseId: tc.toolUseId,
                                 name: tc.name,
-                                input: tc.input || ''
+                                input: ''
                             };
+                            currentToolCall.input += tc.input || '';
                         }
-                        // 如果这个事件包含 stop，完成工具调用
-                        if (tc.stop) {
+
+                        // 实时向前端推送工具参数增量
+                        if (tc.input) {
+                            const blockIndex = toolUseBlockIndexes.get(tc.toolUseId);
+                            if (blockIndex != null) {
+                                toolEvents.push({
+                                    type: "content_block_delta",
+                                    index: blockIndex,
+                                    delta: {
+                                        type: "input_json_delta",
+                                        partial_json: tc.input
+                                    }
+                                });
+                            }
+                        }
+
+                        // 如果这个事件包含 stop，立即结束当前工具块
+                        if (tc.stop && currentToolCall) {
+                            let parsedInput = currentToolCall.input;
                             try {
-                                currentToolCall.input = JSON.parse(currentToolCall.input);
-                            } catch (e) {}
-                            toolCalls.push(currentToolCall);
+                                parsedInput = JSON.parse(currentToolCall.input);
+                            } catch (e) {
+                                // input 不是有效 JSON，保持原样
+                            }
+                            toolCalls.push({
+                                toolUseId: currentToolCall.toolUseId,
+                                name: currentToolCall.name,
+                                input: parsedInput
+                            });
+
+                            const blockIndex = toolUseBlockIndexes.get(currentToolCall.toolUseId);
+                            if (blockIndex != null) {
+                                toolEvents.push({ type: "content_block_stop", index: blockIndex });
+                                toolUseBlockIndexes.delete(currentToolCall.toolUseId);
+                            }
                             currentToolCall = null;
                         }
+                    }
+
+                    if (toolEvents.length > 0) {
+                        yield* pushEvents(toolEvents);
                     }
                 } else if (event.type === 'toolUseInput') {
                     // 工具调用的 input 续传事件
@@ -2426,16 +2509,38 @@ async saveCredentialsToFile(filePath, newData) {
                     }
                     if (currentToolCall) {
                         currentToolCall.input += event.input || '';
+                        const blockIndex = toolUseBlockIndexes.get(currentToolCall.toolUseId);
+                        if (blockIndex != null && event.input) {
+                            yield* pushEvents([{
+                                type: "content_block_delta",
+                                index: blockIndex,
+                                delta: {
+                                    type: "input_json_delta",
+                                    partial_json: event.input
+                                }
+                            }]);
+                        }
                     }
                 } else if (event.type === 'toolUseStop') {
                     // 工具调用结束事件
                     if (currentToolCall && event.stop) {
+                        let parsedInput = currentToolCall.input;
                         try {
-                            currentToolCall.input = JSON.parse(currentToolCall.input);
+                            parsedInput = JSON.parse(currentToolCall.input);
                         } catch (e) {
                             // input 不是有效 JSON，保持原样
                         }
-                        toolCalls.push(currentToolCall);
+                        toolCalls.push({
+                            toolUseId: currentToolCall.toolUseId,
+                            name: currentToolCall.name,
+                            input: parsedInput
+                        });
+
+                        const blockIndex = toolUseBlockIndexes.get(currentToolCall.toolUseId);
+                        if (blockIndex != null) {
+                            yield* pushEvents([{ type: "content_block_stop", index: blockIndex }]);
+                            toolUseBlockIndexes.delete(currentToolCall.toolUseId);
+                        }
                         currentToolCall = null;
                     }
                 }
@@ -2443,10 +2548,20 @@ async saveCredentialsToFile(filePath, newData) {
             
             // 处理未完成的工具调用（如果流提前结束）
             if (currentToolCall) {
+                let parsedInput = currentToolCall.input;
                 try {
-                    currentToolCall.input = JSON.parse(currentToolCall.input);
+                    parsedInput = JSON.parse(currentToolCall.input);
                 } catch (e) {}
-                toolCalls.push(currentToolCall);
+                toolCalls.push({
+                    toolUseId: currentToolCall.toolUseId,
+                    name: currentToolCall.name,
+                    input: parsedInput
+                });
+                const blockIndex = toolUseBlockIndexes.get(currentToolCall.toolUseId);
+                if (blockIndex != null) {
+                    yield* pushEvents([{ type: "content_block_stop", index: blockIndex }]);
+                    toolUseBlockIndexes.delete(currentToolCall.toolUseId);
+                }
                 currentToolCall = null;
             }
 
@@ -2495,36 +2610,7 @@ async saveCredentialsToFile(filePath, newData) {
                 }
             }
 
-            // 3. 处理工具调用（如果有）
-            if (toolCalls.length > 0) {
-                const baseIndex = streamState.nextBlockIndex;
-                for (let i = 0; i < toolCalls.length; i++) {
-                    const tc = toolCalls[i];
-                    const blockIndex = baseIndex + i;
-
-                    yield {
-                        type: "content_block_start",
-                        index: blockIndex,
-                        content_block: {
-                            type: "tool_use",
-                            id: tc.toolUseId || `tool_${uuidv4()}`,
-                            name: tc.name,
-                            input: {}
-                        }
-                    };
-                    
-                    yield {
-                        type: "content_block_delta",
-                        index: blockIndex,
-                        delta: {
-                            type: "input_json_delta",
-                            partial_json: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input || {})
-                        }
-                    };
-                    
-                    yield { type: "content_block_stop", index: blockIndex };
-                }
-            }
+            // 3. 工具调用在流中实时发送，这里不再批量补发
 
             // 计算 output tokens
             const contentBlocksForCount = thinkingRequested
@@ -2577,56 +2663,14 @@ async saveCredentialsToFile(filePath, newData) {
      * Count tokens for a given text using Claude's official tokenizer
      */
     countTextTokens(text) {
-        if (!text) return 0;
-        try {
-            return countTokens(text);
-        } catch (error) {
-            // Fallback to estimation if tokenizer fails
-            logger.warn('[Kiro] Tokenizer error, falling back to estimation:', error.message);
-            return Math.ceil((text || '').length / 4);
-        }
+        return KiroApiService.countTextTokens(text);
     }
 
     /**
      * Calculate input tokens from request body using Claude's official tokenizer
      */
     estimateInputTokens(requestBody) {
-        let allText = "";
-        
-        // Count system prompt tokens
-        if (requestBody.system) {
-            allText += this.processContent(requestBody.system);
-        }
-        
-        // Count thinking prefix tokens if thinking is enabled
-        if (requestBody.thinking?.type && typeof requestBody.thinking.type === 'string') {
-            const t = requestBody.thinking.type.toLowerCase().trim();
-            if (t === 'enabled') {
-                const budget = this._normalizeThinkingBudgetTokens(requestBody.thinking.budget_tokens);
-                allText += `<thinking_mode>enabled</thinking_mode><max_thinking_length>${budget}</max_thinking_length>`;
-            } else if (t === 'adaptive') {
-                const effortRaw = typeof requestBody.thinking.effort === 'string' ? requestBody.thinking.effort : '';
-                const effort = effortRaw.toLowerCase().trim();
-                const normalizedEffort = (effort === 'low' || effort === 'medium' || effort === 'high') ? effort : 'high';
-                allText += `<thinking_mode>adaptive</thinking_mode><thinking_effort>${normalizedEffort}</thinking_effort>`;
-            }
-        }
-        
-        // Count all messages tokens
-        if (requestBody.messages && Array.isArray(requestBody.messages)) {
-            for (const message of requestBody.messages) {
-                if (message.content) {
-                    allText += this.processContent(message.content);
-                }
-            }
-        }
-        
-        // Count tools definitions tokens if present
-        if (requestBody.tools && Array.isArray(requestBody.tools)) {
-            allText += JSON.stringify(requestBody.tools);
-        }
-        
-        return this.countTextTokens(allText);
+        return KiroApiService.estimateInputTokens(requestBody);
     }
 
     /**
@@ -2806,12 +2850,6 @@ async saveCredentialsToFile(filePath, newData) {
                     outputTokens += this.countTextTokens(tc.function.arguments);
                 }
                 stopReason = "tool_use"; // Set stop_reason to "tool_use" when toolCalls exist
-            } else if (content) {
-                contentArray.push({
-                    type: "text",
-                    text: content
-                });
-                outputTokens += this.countTextTokens(content);
             }
 
             return {
@@ -2896,48 +2934,7 @@ async saveCredentialsToFile(filePath, newData) {
      * @returns {Object} { input_tokens: number }
      */
     countTokens(requestBody) {
-        let allText = "";
-        let extraTokens = 0;
-
-        // Count system prompt tokens
-        if (requestBody.system) {
-            allText += this.processContent(requestBody.system);
-        }
-
-        // Count all messages tokens
-        if (requestBody.messages && Array.isArray(requestBody.messages)) {
-            for (const message of requestBody.messages) {
-                if (message.content) {
-                    if (Array.isArray(message.content)) {
-                        for (const block of message.content) {
-                            if (block.type === 'image') {
-                                // Images have a fixed token cost (approximately 1600 tokens for a typical image)
-                                // This is an estimation as actual cost depends on image size
-                                extraTokens += 1600;
-                            } else if (block.type === 'document') {
-                                // Documents - estimate based on content if available
-                                if (block.source?.data) {
-                                    // For base64 encoded documents, estimate tokens
-                                    const estimatedChars = block.source.data.length * 0.75; // base64 to bytes ratio
-                                    extraTokens += Math.ceil(estimatedChars / 4);
-                                }
-                            } else {
-                                allText += this.processContent([block]);
-                            }
-                        }
-                    } else {
-                        allText += this.processContent(message.content);
-                    }
-                }
-            }
-        }
-
-        // Count tools definitions tokens if present
-        if (requestBody.tools && Array.isArray(requestBody.tools)) {
-            allText += JSON.stringify(requestBody.tools);
-        }
-
-        return { input_tokens: this.countTextTokens(allText) + extraTokens };
+        return KiroApiService.countTokens(requestBody);
     }
 
     /**
@@ -2985,15 +2982,22 @@ async saveCredentialsToFile(filePath, newData) {
 
         const headers = {
             'Authorization': `Bearer ${this.accessToken}`,
-            'x-amz-user-agent': `aws-sdk-js/1.0.0 KiroIDE-${kiroVersion}-${machineId}`,
-            'user-agent': `aws-sdk-js/1.0.0 ua/2.1 os/${osName} lang/js md/nodejs#${nodeVersion} api/codewhispererruntime#1.0.0 m/E KiroIDE-${kiroVersion}-${machineId}`,
+            'x-amz-user-agent': `aws-sdk-js/1.0.34 KiroIDE-${kiroVersion}-${machineId}`,
+            'user-agent': `aws-sdk-js/1.0.34 ua/2.1 os/${osName} lang/js md/nodejs#${nodeVersion} api/codewhispererstreaming#1.0.34 m/E KiroIDE-${kiroVersion}-${machineId}`,
             'amz-sdk-invocation-id': uuidv4(),
             'amz-sdk-request': 'attempt=1; max=1',
             'Connection': 'close'
         };
 
+        const axiosConfig = {
+            method: 'get',
+            url: fullUrl,
+            headers
+        };
+        this._applySidecar(axiosConfig);
+
         try {
-            const response = await this.axiosInstance.get(fullUrl, { headers });
+            const response = await this.axiosInstance.request(axiosConfig);
             logger.info('[Kiro] Usage limits fetched successfully');
             return response.data;
         } catch (error) {

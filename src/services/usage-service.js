@@ -566,13 +566,14 @@ export function formatGrokUsage(usageData) {
         usageBreakdown: []
     };
 
-    // Grok 返回的数据结构已在 core 中预处理：{ remainingTokens, remainingQueries, totalQueries, totalLimit, usedQueries, ... }
+    // Grok 返回的数据结构已在 core 中预处理：{ remainingTokens, remainingQueries, totalQueries, totalLimit, usedQueries, unit, ... }
     if (usageData.totalLimit !== undefined && usageData.usedQueries !== undefined) {
+        const isTokens = usageData.unit === 'tokens';
         const item = {
             resourceType: 'TOKEN_USAGE',
-            displayName: 'Remaining Queries',
-            displayNamePlural: 'Remaining Queries',
-            unit: 'queries',
+            displayName: isTokens ? 'Remaining Tokens' : 'Remaining Queries',
+            displayNamePlural: isTokens ? 'Remaining Tokens' : 'Remaining Queries',
+            unit: usageData.unit || 'queries',
             currency: null,
             
             // 使用从 core 传出的计算好的值

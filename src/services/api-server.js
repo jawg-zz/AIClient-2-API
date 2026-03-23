@@ -6,6 +6,7 @@ import { initializeUIManagement } from './ui-manager.js';
 import { initializeAPIManagement } from './api-manager.js';
 import { createRequestHandler } from '../handlers/request-handler.js';
 import { discoverPlugins, getPluginManager } from '../core/plugin-manager.js';
+import { getTLSSidecar } from '../utils/tls-sidecar.js';
 
 /**
  * @license
@@ -178,6 +179,11 @@ function setupWorkerCommunication() {
 async function gracefulShutdown() {
     logger.info('[Server] Initiating graceful shutdown...');
 
+    // 停止 TLS sidecar
+    try {
+        await getTLSSidecar().stop();
+    } catch { /* ignore */ }
+
     if (serverInstance) {
         serverInstance.close(() => {
             logger.info('[Server] HTTP server closed');
@@ -241,6 +247,20 @@ async function startServer() {
     // 自动关联 configs 目录中的配置文件到对应的提供商
     // logger.info('[Initialization] Checking for unlinked provider configs...');
     // await autoLinkProviderConfigs(CONFIG);
+
+    // Start TLS sidecar if enabled
+    if (CONFIG.TLS_SIDECAR_ENABLED) {
+        const sidecar = getTLSSidecar();
+        const started = await sidecar.start({
+            port: CONFIG.TLS_SIDECAR_PORT,
+            binaryPath: CONFIG.TLS_SIDECAR_BINARY_PATH || undefined,
+        });
+        if (started) {
+            logger.info('[Initialization] TLS sidecar started successfully');
+        } else {
+            logger.warn('[Initialization] TLS sidecar failed to start, falling back to Node.js TLS');
+        }
+    }
 
     // Initialize plugin system
     logger.info('[Initialization] Discovering and initializing plugins...');

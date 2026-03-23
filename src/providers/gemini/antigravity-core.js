@@ -10,6 +10,7 @@ import * as os from 'os';
 import * as readline from 'readline';
 import { v4 as uuidv4 } from 'uuid';
 import open from 'open';
+import { configureTLSSidecar } from '../../utils/proxy-utils.js';
 import { formatExpiryTime, isRetryableNetworkError, formatExpiryLog } from '../../utils/common.js';
 import { getProviderModels } from '../provider-models.js';
 import { handleGeminiAntigravityOAuth } from '../../auth/oauth-handlers.js';
@@ -17,20 +18,6 @@ import { getProxyConfigForProvider, getGoogleAuthProxyConfig } from '../../utils
 import { cleanJsonSchemaProperties } from '../../converters/utils.js';
 import { getProviderPoolManager } from '../../services/service-manager.js';
 import { MODEL_PROVIDER } from '../../utils/common.js';
-
-// 配置 HTTP/HTTPS agent 限制连接池大小，避免资源泄漏
-const httpAgent = new http.Agent({
-    keepAlive: true,
-    maxSockets: 100,
-    maxFreeSockets: 5,
-    timeout: 120000,
-});
-const httpsAgent = new https.Agent({
-    keepAlive: true,
-    maxSockets: 100,
-    maxFreeSockets: 5,
-    timeout: 120000,
-});
 
 // --- Constants ---
 const CREDENTIALS_DIR = '.antigravity';
@@ -57,51 +44,6 @@ const DEFAULT_THINKING_MAX = 100000;
 // 获取 Antigravity 模型列表
 const ANTIGRAVITY_MODELS = getProviderModels(MODEL_PROVIDER.ANTIGRAVITY);
 
-// 模型别名映射 - 别名 -> 真实模型名
-const MODEL_ALIAS_MAP = {
-    'gemini-2.5-computer-use-preview-10-2025': 'rev19-uic3-1p',
-    'gemini-3-pro-image-preview': 'gemini-3-pro-image',
-    'gemini-3-pro-preview': 'gemini-3-pro-high',
-    'gemini-3.1-pro-preview': 'gemini-3.1-pro-high',
-    'gemini-3-flash-preview': 'gemini-3-flash',
-    'gemini-2.5-flash-preview': 'gemini-2.5-flash',
-    'gemini-claude-sonnet-4-5': 'claude-sonnet-4-5',
-    'gemini-claude-sonnet-4-5-thinking': 'claude-sonnet-4-5-thinking',
-    'gemini-claude-opus-4-5-thinking': 'claude-opus-4-5-thinking',
-    'gemini-claude-opus-4-6-thinking': 'claude-opus-4-6-thinking'
-};
-
-// 真实模型名 -> 别名
-const MODEL_NAME_MAP = {
-    'rev19-uic3-1p': 'gemini-2.5-computer-use-preview-10-2025',
-    'gemini-3-pro-image': 'gemini-3-pro-image-preview',
-    'gemini-3-pro-high': 'gemini-3-pro-preview',
-    'gemini-3.1-pro-high': 'gemini-3.1-pro-preview',
-    'gemini-3-flash': 'gemini-3-flash-preview',
-    'gemini-2.5-flash': 'gemini-2.5-flash-preview',
-    'claude-sonnet-4-5': 'gemini-claude-sonnet-4-5',
-    'claude-sonnet-4-5-thinking': 'gemini-claude-sonnet-4-5-thinking',
-    'claude-opus-4-5-thinking': 'gemini-claude-opus-4-5-thinking',
-    'claude-opus-4-6-thinking': 'gemini-claude-opus-4-6-thinking'
-};
-
-/**
- * 将别名转换为真实模型名
- * @param {string} modelName - 模型别名
- * @returns {string} 真实模型名
- */
-function alias2ModelName(modelName) {
-    return MODEL_ALIAS_MAP[modelName];
-}
-
-/**
- * 将真实模型名转换为别名
- * @param {string} modelName - 真实模型名
- * @returns {string|null} 模型别名，如果不支持则返回 null
- */
-function modelName2Alias(modelName) {
-    return MODEL_NAME_MAP[modelName];
-}
 
 /**
  * 检查模型是否为 Claude 模型
@@ -129,8 +71,8 @@ function isImageModel(modelName) {
 function modelSupportsThinking(modelName) {
     if (!modelName) return false;
     const name = modelName.toLowerCase();
-    // 支持 thinking 的模型：gemini-3-*, gemini-2.5-*, claude-*-thinking
-    return name.startsWith('gemini-3-') ||
+    // 支持 thinking 的模型：gemini-3*, gemini-2.5-*, claude-*-thinking
+    return name.startsWith('gemini-3') ||
            name.startsWith('gemini-2.5-') ||
            name.includes('-thinking');
 }
@@ -141,6 +83,14 @@ function modelSupportsThinking(modelName) {
  */
 function generateRequestID() {
     return 'agent-' + uuidv4();
+}
+
+/**
+ * 生成随机图像生成请求ID
+ * @returns {string}
+ */
+function generateImageGenRequestID() {
+    return `image_gen/${Date.now()}/${uuidv4()}/12`;
 }
 
 /**
@@ -163,7 +113,7 @@ function generateStableSessionID(payload) {
         const contents = payload?.request?.contents;
         if (Array.isArray(contents)) {
             for (const content of contents) {
-                if (content.role === 'user') {
+                if (content && content.role === 'user' && Array.isArray(content.parts)) {
                     const text = content.parts?.[0]?.text;
                     if (text) {
                         const hash = crypto.createHash('sha256').update(text).digest();
@@ -270,21 +220,29 @@ function geminiToAntigravity(modelName, payload, projectId) {
     let template = JSON.parse(JSON.stringify(payload));
 
     const isClaudeModel = isClaude(modelName);
+    const isImgModel = isImageModel(modelName);
 
     // 设置基本字段
     template.model = modelName;
     template.userAgent = 'antigravity';
-    template.requestType = 'agent';
+    
+    // 设置请求类型
+    template.requestType = isImgModel ? 'image_gen' : 'agent';
+    
     template.project = projectId || generateProjectID();
-    template.requestId = generateRequestID();
 
-    // 确保 request 对象存在
-    if (!template.request) {
-        template.request = {};
+    // 设置请求ID和会话ID
+    if (isImgModel) {
+        template.requestId = generateImageGenRequestID();
+    } else {
+        template.requestId = generateRequestID();
+        // 确保 request 对象存在
+        if (!template.request) {
+            template.request = {};
+        }
+        // 设置会话ID - 使用稳定的会话ID
+        template.request.sessionId = generateStableSessionID(template);
     }
-
-    // 设置会话ID - 使用稳定的会话ID
-    template.request.sessionId = generateStableSessionID(template);
 
     // 删除安全设置
     if (template.request.safetySettings) {
@@ -292,11 +250,14 @@ function geminiToAntigravity(modelName, payload, projectId) {
     }
 
     // 设置工具配置
+    // 如果根部有 toolConfig，且 request 内部没有，则移动进去
     if (template.request.toolConfig) {
         if (!template.request.toolConfig.functionCallingConfig) {
             template.request.toolConfig.functionCallingConfig = {};
         }
-        template.request.toolConfig.functionCallingConfig.mode = 'VALIDATED';
+        if (isClaudeModel) {
+            template.request.toolConfig.functionCallingConfig.mode = 'VALIDATED';
+        }
     }
 
     // 当模型是 Claude 时，禁止使用 tools
@@ -329,22 +290,22 @@ function geminiToAntigravity(modelName, payload, projectId) {
     }
 
     // 清理所有工具声明中的 JSON Schema 属性（移除 Google API 不支持的属性如 exclusiveMinimum 等）
-        if (template.request.tools && Array.isArray(template.request.tools)) {
+    if (template.request.tools && Array.isArray(template.request.tools)) {
         template.request.tools.forEach((tool) => {
-                if (tool.functionDeclarations && Array.isArray(tool.functionDeclarations)) {
+            if (tool.functionDeclarations && Array.isArray(tool.functionDeclarations)) {
                 tool.functionDeclarations.forEach((funcDecl) => {
                     // 对于 Claude 模型，处理 parametersJsonSchema
                     if (isClaudeModel && funcDecl.parametersJsonSchema) {
                         funcDecl.parameters = cleanJsonSchemaProperties(funcDecl.parametersJsonSchema);
-                            delete funcDecl.parameters.$schema;
-                            delete funcDecl.parametersJsonSchema;
+                        delete funcDecl.parameters.$schema;
+                        delete funcDecl.parametersJsonSchema;
                     } else if (funcDecl.parameters) {
                         funcDecl.parameters = cleanJsonSchemaProperties(funcDecl.parameters);
-                        }
-                    });
-                }
-            });
-        }
+                    }
+                });
+            }
+        });
+    }
 
     // 如果是图像模型，增加参数 "generationConfig.imageConfig.imageSize": "4K"
     if (isImageModel(modelName)) {
@@ -710,6 +671,20 @@ function ensureRolesInContents(requestBody, modelName) {
 
 export class AntigravityApiService {
     constructor(config) {
+        // 配置 HTTP/HTTPS agent 限制连接池大小，避免资源泄漏
+        this.httpAgent = new http.Agent({
+            keepAlive: true,
+            maxSockets: 100,
+            maxFreeSockets: 5,
+            timeout: 120000,
+        });
+        this.httpsAgent = new https.Agent({
+            keepAlive: true,
+            maxSockets: 100,
+            maxFreeSockets: 5,
+            timeout: 120000,
+        });
+
         // 检查是否需要使用代理
         const proxyConfig = getGoogleAuthProxyConfig(config, 'gemini-antigravity');
 
@@ -724,7 +699,7 @@ export class AntigravityApiService {
             logger.info('[Antigravity] Using proxy for OAuth2Client');
         } else {
             oauth2Options.transporterOptions = {
-                agent: httpsAgent,
+                agent: this.httpsAgent,
             };
         }
 
@@ -744,6 +719,10 @@ export class AntigravityApiService {
 
         // 保存代理配置供后续使用
         this.proxyConfig = getProxyConfigForProvider(config, 'gemini-antigravity');
+    }
+
+    _applySidecar(requestOptions) {
+        return configureTLSSidecar(requestOptions, this.config, MODEL_PROVIDER.ANTIGRAVITY);
     }
 
     /**
@@ -804,18 +783,18 @@ export class AntigravityApiService {
     }
 
     async initializeAuth(forceRefresh = false) {
-        // 检查是否需要刷新 Token
+        const credPath = this.oauthCredsFilePath || path.join(os.homedir(), CREDENTIALS_DIR, CREDENTIALS_FILE);
+        
+        // 首先执行基础凭证加载
+        await this.loadCredentials();
+
+        // 检查是否需要刷新 Token（在加载凭证后重新评估）
         const needsRefresh = forceRefresh || this.isTokenExpiringSoon();
 
         if (this.authClient.credentials.access_token && !needsRefresh) {
             // Token 有效且不需要刷新
             return;
         }
-
-        const credPath = this.oauthCredsFilePath || path.join(os.homedir(), CREDENTIALS_DIR, CREDENTIALS_FILE);
-        
-        // 首先执行基础凭证加载
-        await this.loadCredentials();
 
         // 只有在明确要求刷新，或者 AccessToken 确实缺失时，才执行刷新/认证
         // 注意：在 V2 架构下，此方法主要由 PoolManager 的后台队列调用
@@ -1023,9 +1002,9 @@ export class AntigravityApiService {
                 if (res.data && res.data.models) {
                     const models = Object.keys(res.data.models);
                     this.availableModels = models
-                        .map(modelName2Alias)
                         .filter(alias => alias !== undefined && alias !== '' && alias !== null)
-                        .filter(alias => ANTIGRAVITY_MODELS.includes(alias));
+                        .filter(alias => ANTIGRAVITY_MODELS.includes(alias) || alias.startsWith('claude-'))
+                        .map(alias => alias.startsWith('claude-') ? `gemini-${alias}` : alias);
 
                     logger.info(`[Antigravity] Available models: [${this.availableModels.join(', ')}]`);
                     return;
@@ -1099,6 +1078,7 @@ export class AntigravityApiService {
                 body: JSON.stringify(body)
             };
 
+            this._applySidecar(requestOptions);
             const res = await this.authClient.request(requestOptions);
             return res.data;
         } catch (error) {
@@ -1192,6 +1172,7 @@ export class AntigravityApiService {
                 body: JSON.stringify(body)
             };
 
+            this._applySidecar(requestOptions);
             const res = await this.authClient.request(requestOptions);
 
             if (res.status !== 200) {
@@ -1314,6 +1295,9 @@ export class AntigravityApiService {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
         }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
+        }
 
         // 检查 token 是否即将过期，如果是则推送到刷新队列
         if (this.isExpiryDateNear()) {
@@ -1328,11 +1312,13 @@ export class AntigravityApiService {
 
         let selectedModel = model;
         if (!this.availableModels.includes(model)) {
-            logger.warn(`[Antigravity] Model '${model}' not found. Using default model: '${this.availableModels[0]}'`);
-            selectedModel = this.availableModels[0];
+            logger.warn(`[Antigravity] Model '${model}' not found. Using default model: 'gemini-3-flash'`);
+            selectedModel = 'gemini-3-flash';
         }
 
-        const actualModelName = alias2ModelName(selectedModel);
+        // 移除 gemini- 前缀以获取实际模型名称（针对 claude 模型）
+        const actualModelName = selectedModel.startsWith('gemini-claude-') ? selectedModel.replace('gemini-claude-', 'claude-') : selectedModel;
+        logger.info(`[Antigravity] Selected model: ${actualModelName}`);
         // 深拷贝请求体
         const processedRequestBody = ensureRolesInContents(JSON.parse(JSON.stringify(requestBody)), actualModelName);
         const isClaudeModel = isClaude(actualModelName);
@@ -1387,6 +1373,9 @@ export class AntigravityApiService {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
         }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
+        }
 
         // 检查 token 是否即将过期，如果是则推送到刷新队列
         if (this.isExpiryDateNear()) {
@@ -1401,11 +1390,13 @@ export class AntigravityApiService {
 
         let selectedModel = model;
         if (!this.availableModels.includes(model)) {
-            logger.warn(`[Antigravity] Model '${model}' not found. Using default model: '${this.availableModels[0]}'`);
-            selectedModel = this.availableModels[0];
+            logger.warn(`[Antigravity] Model '${model}' not found. Using default model: 'gemini-3-flash'`);
+            selectedModel = 'gemini-3-flash';
         }
 
-        const actualModelName = alias2ModelName(selectedModel);
+        // 移除 gemini- 前缀以获取实际模型名称（针对 claude 模型）
+        const actualModelName = selectedModel.startsWith('gemini-claude-') ? selectedModel.replace('gemini-claude-', 'claude-') : selectedModel;
+        logger.info(`[Antigravity] Selected model: ${actualModelName}`);
         // 深拷贝请求体
         const processedRequestBody = ensureRolesInContents(JSON.parse(JSON.stringify(requestBody)), actualModelName);
 
@@ -1483,6 +1474,7 @@ export class AntigravityApiService {
                         body: JSON.stringify({ project: this.projectId })
                     };
 
+                    this._applySidecar(requestOptions);
                     const res = await this.authClient.request(requestOptions);
                     // logger.info(`[Antigravity] fetchAvailableModels success: ${JSON.stringify(res.data)}`);
                     if (res.data) {
@@ -1492,8 +1484,12 @@ export class AntigravityApiService {
                             
                             // 遍历模型数据，提取配额信息
                             for (const [modelId, modelData] of Object.entries(modelsData)) {
-                                const aliasName = modelName2Alias(modelId);
-                                if (aliasName == null || aliasName === '') continue; // 跳过不支持的模型
+                                // 参考 fetchAvailableModels 的逻辑修复 modelName2Alias 不存在的问题
+                                if (!modelId || (!ANTIGRAVITY_MODELS.includes(modelId) && !modelId.startsWith('claude-'))) {
+                                    continue;
+                                }
+
+                                const aliasName = modelId.startsWith('claude-') ? `gemini-${modelId}` : modelId;
                                 
                                 const modelInfo = {
                                     remaining: 0,

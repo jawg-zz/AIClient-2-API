@@ -30,20 +30,19 @@
 > - Ruan Yifeng先生による[週刊359号](https://www.ruanyifeng.com/blog/2025/08/weekly-issue-359.html)での推薦に感謝します
 >
 > **📅 バージョン更新ログ**
->
+> 
 > <details>
 > <summary>クリックして詳細なバージョン履歴を展開</summary>
->
+> 
+> - **2026.03.02** - Grokプロトコルサポートを追加：Cookie/SSO方式でxAI Grokシリーズモデル（Grok 3/4）へのアクセスに対応し、マルチモーダル入力、画像/動画生成、自動トークンリフレッシュ、ストリーミング出力をサポート
 > - **2026.01.26** - Codexプロトコルサポートを追加：OpenAI Codex OAuth認証での接続に対応
 > - **2026.01.25** - AI 監視プラグインの強化：AI プロトコル変換前後のリクエストパラメータとレスポンスの監視をサポート。ログ管理の最適化：統一されたログ形式、ビジュアル設定
 > - **2026.01.15** - プロバイダープールマネージャーの最適化：非同期リフレッシュキューメカニズム、バッファキュー重複排除、グローバル並行制御、ノードウォームアップと自動期限切れ検出を追加
-> - **2026.01.07** - iFlowプロトコルサポートの追加、OAuth認証方式でQwen、Kimi、DeepSeek、GLMシリーズモデルにアクセス可能、自動トークンリフレッシュ機能をサポート
-> - **2026.01.03** - テーマ切替機能を追加し、プロバイダープール初期化を最適化、プロバイダーのデフォルト設定を使用するフォールバック戦略を削除
+> > - **2026.01.03** - テーマ切替機能を追加し、プロバイダープール初期化を最適化、プロバイダーのデフォルト設定を使用するフォールバック戦略を削除
 > - **2025.12.30** - メインプロセス管理と自動更新機能を追加
 > - **2025.12.25** - 設定ファイル統一管理：すべての設定を `configs/` ディレクトリに集約。Dockerユーザーはマウントパスを `-v "ローカルパス:/app/configs"` に更新が必要
 > - **2025.12.11** - Dockerイメージが自動的にビルドされ、Docker Hubで公開されました: [justlikemaki/aiclient-2-api](https://hub.docker.com/r/justlikemaki/aiclient-2-api)
 > - **2025.11.30** - Antigravityプロトコルサポートの追加、Google内部インターフェース経由でGemini 3 Pro、Claude Sonnet 4.5などのモデルへのアクセスをサポート
-> - **2025.11.16** - Ollamaプロトコルサポートの追加、統一インターフェースでサポートされるすべてのモデルにアクセス
 > - **2025.11.11** - Web UI管理コントロールコンソールの追加、リアルタイム設定管理と健康状態モニタリングをサポート
 > - **2025.11.06** - Gemini 3 プレビュー版のサポートを追加、モデル互換性とパフォーマンス最適化を向上
 > - **2025.10.18** - Kiroオープン登録、新規アカウントに500クレジット付与、Claude Sonnet 4.5を完全サポート
@@ -61,13 +60,14 @@
 ## 💡 コアアドバンテージ
 
 ### 🎯 統一アクセス、ワンストップ管理
-*   **マルチモデル統一インターフェース**：標準OpenAI互換プロトコルを通じて、一度の設定でGemini、Claude、Qwen Code、Kimi K2、MiniMax M2などの主流大規模モデルにアクセス
+*   **マルチモデル統一インターフェース**：標準OpenAI互換プロトコルを通じて、一度の設定でGemini、Claude、Grok、Qwen Code、Kimi K2、MiniMax M2などの主流大規模モデルにアクセス
 *   **柔軟な切り替えメカニズム**：Pathルーティング、起動パラメータ、環境変数の3つの方法で動的にモデルを切り替え、異なるシナリオのニーズに対応
 *   **ゼロコスト移行**：OpenAI API仕様と完全互換、Cherry-Studio、NextChat、Clineなどのツールを変更なしで使用可能
 *   **マルチプロトコルインテリジェント変換**：OpenAI、Claude、Geminiの3大プロトコル間のインテリジェント変換をサポートし、クロスプロトコルモデル呼び出しを実現
 
 ### 🚀 制限を突破、効率を向上
 *   **公式制限の回避**：OAuth認証メカニズムを利用して、Gemini、Antigravityなどの無料APIのレート制限と割り当て制限を効果的に突破
+*   **TLS 指紋の回避**：内蔵の TLS Sidecar (Go uTLS) によりブラウザの特徴をシミュレートし、Grok などのサービスの Cloudflare 403 ブロックを効果的に回避
 *   **無料高度モデル**：Kiro APIモードでClaude Opus 4.5を無料使用、Qwen OAuthモードでQwen3 Coder Plusを使用し、使用コストを削減
 *   **インテリジェントアカウントプールスケジューリング**：マルチアカウントポーリング、自動フェイルオーバー、設定ダウングレードをサポートし、99.9%のサービス可用性を保証
 
@@ -92,7 +92,6 @@
   - [📋 コア機能](#-コア機能)
 - [🔐 認証設定ガイド](#-認証設定ガイド)
 - [📁 認証ファイル保存パス](#-認証ファイル保存パス)
-- [🦙 Ollamaプロトコル使用例](#-ollamaプロトコル使用例)
 - [⚙️ 高度な設定](#高度な設定)
 - [❓ よくある質問](#-よくある質問)
 - [📄 オープンソースライセンス](#-オープンソースライセンス)
@@ -110,12 +109,12 @@ AIClient-2-APIを使い始める最も推奨される方法は、自動起動ス
 #### 🐳 Docker クイックスタート (推奨)
 
 ```bash
-docker run -d -p 3000:3000 -p 8085-8087:8085-8087 -p 1455:1455 -p 19876-19880:19876-19880 --restart=always -v "指定パス:/app/configs" --name aiclient2api justlikemaki/aiclient-2-api
+docker run -d -p 3000:3000 -p 8085-8086:8085-8086 -p 1455:1455 -p 19876-19880:19876-19880 --restart=always -v "指定パス:/app/configs" --name aiclient2api justlikemaki/aiclient-2-api
 ```
 
 **パラメータ説明**：
 - `-d`：バックグラウンドでコンテナを実行
-- `-p 3000:3000 ...`：ポートマッピング。3000はWeb UI用、その他はOAuthコールバック用（Gemini: 8085, Antigravity: 8086, iFlow: 8087, Codex: 1455, Kiro: 19876-19880）
+- `-p 3000:3000 ...`：ポートマッピング。3000はWeb UI用、その他はOAuthコールバック用（Gemini: 8085, Antigravity: 8086, Codex: 1455, Kiro: 19876-19880）
 - `--restart=always`：コンテナ自動再起動ポリシー
 - `-v "指定パス:/app/configs"`：設定ディレクトリをマウント（「指定パス」を実際のパスに置き換えてください、例：`/home/user/aiclient-configs`）
 - `--name aiclient2api`：コンテナ名
@@ -139,6 +138,13 @@ docker compose up -d
 *   **Linux/macOS**: `chmod +x install-and-run.sh && ./install-and-run.sh`
 *   **Windows**: `install-and-run.bat` をダブルクリックして実行
 
+> **💡 スクリプトの実行に失敗した場合は、手動で依存関係をインストールして起動できます：**
+> ```bash
+> npm install
+> npm start
+> ```
+
+
 #### 2. コンソールへのアクセス
 サーバー起動後、ブラウザで以下にアクセスしてください：
 👉 [**http://localhost:3000**](http://localhost:3000)
@@ -150,6 +156,15 @@ docker compose up -d
 *   ✅ 各プロバイダーの API Key の入力または OAuth 認証情報のアップロード
 *   ✅ デフォルトモデルプロバイダーのリアルタイム切り替え
 *   ✅ 健全性ステータスとリアルタイムリクエストログの監視
+
+#### 4. ローカル環境の準備 (非 Docker ユーザー)
+ローカルで直接実行（スクリプトまたは Node.js 経由）し、Grok などのサービスの TLS 検出を回避する必要がある場合は、以下を確認してください：
+*   ✅ **Go 言語のインストール**：[Go 公式サイト](https://go.dev/) からダウンロードしてインストール (1.20+)。
+*   ✅ **Sidecar の手動ビルド**：以下のコマンドを実行して TLS プロキシコンポーネントをビルドします：
+    ```bash
+    cd tls-sidecar && go build -o tls-sidecar && cd ..
+    ```
+    *注意：このバイナリファイルがビルドされていない場合、TLS Sidecar 機能は実行ファイルが見つからないため起動に失敗します。*
 
 #### スクリプト実行例
 ```
@@ -203,6 +218,7 @@ docker compose up -d
 
 #### 最新モデルサポート
 以下の最新大規模モデルをシームレスにサポート、Web UIまたは[`config.json`](./configs/config.json)で対応するエンドポイントを設定するだけで使用可能：
+*   **Grok 3 / Grok 4** - xAIのフラッグシップモデル。Grok Cookie/SSO経由でサポートされ、思考モデル、画像生成、動画生成に対応
 *   **Claude 4.5 Opus** - Anthropic史上最強モデル、Kiro、Antigravity経由でサポート
 *   **Gemini 3 Pro** - Google次世代アーキテクチャプレビュー版、Gemini、Antigravity経由でサポート
 *   **Qwen3 Coder Plus** - アリババ通義千問の最新コード専用モデル、Qwen Code経由でサポート
@@ -290,18 +306,20 @@ curl http://localhost:3000/claude-kiro-oauth/v1/chat/completions \
 - `budget_tokens` は `[1024, 24576]` の範囲に制限されます（省略または無効な場合はデフォルトの `20000` が適用されます）。
 - トークンの取得/リフレッシュ/プールローテーションメカニズムは変更されません。
 
-#### iFlow OAuth設定
-1. **初回認証**：Web UIの「設定管理」または「プロバイダープール」ページで、iFlowの「認証生成」ボタンをクリック
-2. **電話番号ログイン**：システムがiFlow認証ページを開き、電話番号でログイン認証を完了
-3. **自動保存**：認証成功後、システムは自動的にAPI Keyを取得し認証情報を保存
-4. **サポートモデル**：Qwen3シリーズ、Kimi K2、DeepSeek V3/R1、GLM-4.6/4.7など
-5. **自動リフレッシュ**：システムはトークンの期限切れが近づくと自動的にリフレッシュ、手動介入不要
-
 #### Codex OAuth設定
 1. **認証の生成**：Web UIの「プロバイダープール」または「設定管理」ページで、Codexの「認証生成」ボタンをクリック
 2. **ブラウザログイン**：システムがOpenAI Codex認証ページを開き、OAuthログインを完了
 3. **自動保存**：認証成功後、システムがCodexのOAuth認証情報ファイルを自動保存
 4. **コールバックポート**：OAuthコールバックポート `1455` が占有されていないことを確認
+
+#### Grok Cookie/SSO 設定
+1. **SSOトークンの取得**: [Grok公式サイト](https://grok.com/)にログインし、ブラウザの開発者ツールの Application -> Cookies から `sso` の値をコピーします。
+2. **設定の入力**: Web UIの「設定管理」ページ、または設定ファイルを直接編集して、トークンを `GROK_COOKIE_TOKEN` に入力します。
+3. **サポート機能**:
+   - チャットおよび思考モデル (Grok 3 Thinking)
+   - 画像生成 (Grok Imagine)
+   - 動画生成 (Grok Video)
+4. **注意事項**: ブロックを避けるため、`GROK_USER_AGENT` がCookie取得時と同じブラウザのものであることを確認してください。
 
 #### アカウントプール管理設定
 1. **プール設定ファイルの作成**：[provider_pools.json.example](./configs/provider_pools.json.example) を参考に設定ファイルを作成します
@@ -324,7 +342,6 @@ curl http://localhost:3000/claude-kiro-oauth/v1/chat/completions \
 | **Kiro** | `~/.aws/sso/cache/kiro-auth-token.json` | Kiro認証トークン |
 | **Qwen** | `~/.qwen/oauth_creds.json` | Qwen OAuth認証情報 |
 | **Antigravity** | `~/.antigravity/oauth_creds.json` | Antigravity OAuth認証情報 (Claude 4.5 Opus サポート) |
-| **iFlow** | `~/.iflow/oauth_creds.json` | iFlow OAuth認証情報 (Qwen、Kimi、DeepSeek、GLM サポート) |
 | **Codex** | `~/.codex/oauth_creds.json` | Codex OAuth認証情報 |
 
 > **説明**：`~`はユーザーホームディレクトリを表します（Windows: `C:\Users\ユーザー名`、Linux/macOS: `/home/ユーザー名`または`/Users/ユーザー名`）
@@ -332,40 +349,6 @@ curl http://localhost:3000/claude-kiro-oauth/v1/chat/completions \
 > **カスタムパス**：設定ファイルの関連パラメータまたは環境変数でカスタム保存場所を指定可能
 
 </details>
-
----
-
-### 🦙 Ollamaプロトコル使用例
-
-本プロジェクトはOllamaプロトコルをサポートしており、統一インターフェースを通じてすべてのサポートモデルにアクセスできます。Ollamaエンドポイントは`/api/tags`、`/api/chat`、`/api/generate`などの標準インターフェースを提供します。
-
-**Ollama API呼び出し例**：
-
-1. **利用可能なすべてのモデルをリスト表示**：
-```bash
-curl http://localhost:3000/ollama/api/tags \
-  -H "Authorization: Bearer your-api-key"
-```
-
-2. **チャットインターフェース**：
-```bash
-curl http://localhost:3000/ollama/api/chat \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-api-key" \
-  -d '{
-    "model": "[Claude] claude-sonnet-4.5",
-    "messages": [
-      {"role": "user", "content": "こんにちは"}
-    ]
-  }'
-```
-
-3. **モデルプレフィックスを使用してプロバイダーを指定**：
-- `[Kiro]` - Kiro APIを使用してClaudeモデルにアクセス
-- `[Claude]` - 公式Claude APIを使用
-- `[Gemini CLI]` - Gemini CLI OAuth経由でアクセス
-- `[OpenAI]` - 公式OpenAI APIを使用
-- `[Qwen CLI]` - Qwen OAuth経由でアクセス
 
 ---
 
@@ -394,12 +377,13 @@ curl http://localhost:3000/ollama/api/chat \
    ```json
    {
      "PROXY_URL": "http://127.0.0.1:7890",
-     "PROXY_ENABLED_PROVIDERS": [
-       "gemini-cli-oauth",
-       "gemini-antigravity",
-       "claude-kiro-oauth"
-     ]
-   }
+      "PROXY_ENABLED_PROVIDERS": [
+        "gemini-cli-oauth",
+        "gemini-antigravity",
+        "claude-kiro-oauth",
+        "grok-custom"
+      ]
+}
    ```
 
 3. **プロバイダー独自のプロキシ済みエンドポイント**：一部のプロバイダー（OpenAI、Claudeなど）はプロキシ済みAPIエンドポイントの設定をサポートしています
@@ -517,6 +501,38 @@ curl http://localhost:3000/ollama/api/chat \
 - フォールバックはプロトコル互換タイプ間でのみ発生します（例：`gemini-*` 間、`claude-*` 間）
 - システムは自動的にターゲットProvider Typeがリクエストされたモデルをサポートしているか確認します
 
+#### 5. TLS Sidecar (Bypass 403/Cloudflare)
+
+Grok などの TLS 指紋（JA3/JA4）を厳密に検証するサービスに対して、本プロジェクトは Go uTLS ベースの Sidecar プロキシを統合しています。これにより、ブラウザの TLS 特徴をシミュレートし、403 Forbidden エラーを効果的に解決します。
+
+**設定手順**:
+
+1.  **バイナリのビルド**:
+    TLS シミュレーションには Go 言語のサポートが必要です。まず sidecar をビルドする必要があります：
+    ```bash
+    cd tls-sidecar
+    go build -o tls-sidecar
+    ```
+    *Windows ユーザーは、ビルド後、生成された `tls-sidecar.exe` が `tls-sidecar/` またはルートディレクトリにあることを確認してください。*
+
+2.  **設定の有効化**:
+    Web UI の「設定管理」ページで **TLS Sidecar** を有効にするか、`configs/config.json` を編集します：
+    ```json
+    {
+      "TLS_SIDECAR_ENABLED": true,
+      "TLS_SIDECAR_PORT": 9090
+    }
+    ```
+
+3.  **動作原理**:
+    - 有効にすると、システムは自動的に Go プロセスを起動し管理します。
+    - 特定のプロバイダー（Grok など）へのリクエストは、自動的に Sidecar にルーティングされます。
+    - Sidecar は最新の Chrome 指紋を使用して TLS ハンドシェイクを行い、HTTP/2 の自動ネゴシエーションをサポートします。
+
+**注意事項**:
+- ローカル実行には Go 環境 (1.20+) が必要です。
+- **Docker ユーザー**: イメージには既にプリビルド済みのバイナリが含まれています。設定で有効にするだけでよく、手動でのビルドは不要です。
+
 </details>
 
 ---
@@ -532,7 +548,7 @@ curl http://localhost:3000/ollama/api/chat \
 
 **解決策**：
 - **ネットワーク接続を確認**：Google、アリババクラウドなどのサービスに正常にアクセスできることを確認
-- **ポート占有を確認**：OAuthコールバックには特定のポートが必要です（Gemini: 8085, Antigravity: 8086, iFlow: 8087, Codex: 1455, Kiro: 19876-19880）、これらのポートが占有されていないことを確認
+- **ポート占有を確認**：OAuthコールバックには特定のポートが必要です（Gemini: 8085, Antigravity: 8086, Codex: 1455, Kiro: 19876-19880）、これらのポートが占有されていないことを確認
 - **ブラウザキャッシュをクリア**：シークレットモードを使用するか、ブラウザキャッシュをクリアして再試行
 - **ファイアウォール設定を確認**：ファイアウォールがローカルコールバックポートへのアクセスを許可していることを確認
 - **Dockerユーザー**：すべてのOAuthコールバックポートが正しくマッピングされていることを確認
@@ -626,11 +642,9 @@ kill -9 <PID>
 
 ### 10. APIが404を返す
 
-**問題の説明**：APIエンドポイントを呼び出すと404 Not Foundエラーが返されます。
-
 **解決策**：
-- **エンドポイントパスを確認**：`/v1/chat/completions`、`/ollama/api/chat` などの正しいエンドポイントパスを使用していることを確認
-- **クライアントの自動補完を確認**：一部のクライアント（Cherry-Studio、NextChatなど）はBase URLの後にパス（`/v1/chat/completions` など）を自動的に追加し、パスの重複を引き起こします。コンソールで実際のリクエストURLを確認し、冗長なパス部分を削除してください
+- **エンドポイントパスを確認**：`/v1/chat/completions` などの正しいエンドポイントパスを使用していることを確認
+- **クライアントの自動補完を確認**：一部のクライアント（Cherry-Studio、NextChatなど）はBase URLの後にパス（`/v1/chat/completions` など）を自動的に追加し、パスの重複を引き起こします。コンソールで実際のリクエストURLを確認し、冗长なパス部分を削除してください
 - **サービス状態を確認**：サービスが正常に起動していることを確認、`http://localhost:3000` にアクセスしてWeb UIを確認
 - **ポート設定を確認**：リクエストが正しいポート（デフォルト3000）に送信されていることを確認
 - **利用可能なルートを確認**：Web UIダッシュボードページの「インタラクティブルーティング例」ですべての利用可能なエンドポイントを確認
@@ -660,6 +674,7 @@ kill -9 <PID>
 **問題の説明**：APIリクエストが403 Forbiddenエラーを返します。
 
 **解決策**：
+- **TLS Sidecar の有効化**：Grok などのサービスにおいて、403 エラーは TLS 指紋のブロックが原因であることが多いです。[高度な設定 - TLS Sidecar](#5-tls-sidecar-bypass-403cloudflare) を参照して Sidecar を有効にし、ビルドしてください。
 - **ノード状態を確認**：Web UIの「プロバイダープール」ページでノード状態が正常（ヘルスチェック合格）であれば、このエラーは無視できます。システムが自動的に処理します
 - **アカウント権限を確認**：使用しているアカウントがリクエストされたモデルまたはサービスにアクセスする権限があることを確認
 - **API Key権限を確認**：一部のプロバイダーのAPI Keyにはアクセス範囲の制限がある場合があります。Keyに十分な権限があることを確認

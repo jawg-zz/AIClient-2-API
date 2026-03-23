@@ -2,8 +2,8 @@ import axios from 'axios';
 import logger from '../../utils/logger.js';
 import * as http from 'http';
 import * as https from 'https';
-import { configureAxiosProxy } from '../../utils/proxy-utils.js';
-import { isRetryableNetworkError } from '../../utils/common.js';
+import { configureAxiosProxy, configureTLSSidecar } from '../../utils/proxy-utils.js';
+import { isRetryableNetworkError, MODEL_PROVIDER } from '../../utils/common.js';
 
 /**
  * Claude API Core Service Class.
@@ -63,9 +63,13 @@ export class ClaudeApiService {
         }
         
         // 配置自定义代理
-        configureAxiosProxy(axiosConfig, this.config, 'claude-custom');
+        configureAxiosProxy(axiosConfig, this.config, MODEL_PROVIDER.CLAUDE_CUSTOM);
         
         return axios.create(axiosConfig);
+    }
+
+    _applySidecar(axiosConfig) {
+        return configureTLSSidecar(axiosConfig, this.config, MODEL_PROVIDER.CLAUDE_CUSTOM, this.baseUrl);
     }
 
     /**
@@ -81,7 +85,13 @@ export class ClaudeApiService {
         const baseDelay = this.config.REQUEST_BASE_DELAY || 1000; // 1 second base delay
 
         try {
-            const response = await this.client.post(endpoint, body);
+            const axiosConfig = {
+                method: 'post',
+                url: endpoint,
+                data: body
+            };
+            this._applySidecar(axiosConfig);
+            const response = await this.client.request(axiosConfig);
             return response.data;
         } catch (error) {
             const status = error.response?.status;
@@ -140,7 +150,14 @@ export class ClaudeApiService {
         const baseDelay = this.config.REQUEST_BASE_DELAY || 1000; // 1 second base delay
 
         try {
-            const response = await this.client.post(endpoint, { ...body, stream: true }, { responseType: 'stream' });
+            const axiosConfig = {
+                method: 'post',
+                url: endpoint,
+                data: { ...body, stream: true },
+                responseType: 'stream'
+            };
+            this._applySidecar(axiosConfig);
+            const response = await this.client.request(axiosConfig);
             const reader = response.data;
             let buffer = '';
 
@@ -230,6 +247,9 @@ export class ClaudeApiService {
         if (requestBody._monitorRequestId) {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
+        }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
         }
         
         const response = await this.callApi('/messages', requestBody);

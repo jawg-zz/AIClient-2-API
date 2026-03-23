@@ -11,7 +11,7 @@ import { EventEmitter } from 'events';
 import { randomUUID } from 'node:crypto';
 import { getProviderModels } from '../provider-models.js';
 import { handleQwenOAuth } from '../../auth/oauth-handlers.js';
-import { configureAxiosProxy } from '../../utils/proxy-utils.js';
+import { configureAxiosProxy, configureTLSSidecar } from '../../utils/proxy-utils.js';
 import { isRetryableNetworkError, MODEL_PROVIDER, formatExpiryLog } from '../../utils/common.js';
 import { getProviderPoolManager } from '../../services/service-manager.js';
 
@@ -236,6 +236,10 @@ export class QwenApiService {
 
         this.isInitialized = true;
         logger.info('[Qwen] Initialization complete.');
+    }
+
+    _applySidecar(axiosConfig) {
+        return configureTLSSidecar(axiosConfig, this.config, MODEL_PROVIDER.QWEN_API, this.baseUrl);
     }
 
     /**
@@ -597,8 +601,16 @@ export class QwenApiService {
             const mergedTools = processedBody.tools ? [...defaultTools, ...processedBody.tools] : defaultTools;
             
             const requestBody = isStream ? { ...processedBody, stream: true, tools: mergedTools } : { ...processedBody, tools: mergedTools };
-            const options = isStream ? { responseType: 'stream' } : {};
-            const response = await this.currentAxiosInstance.post(endpoint, requestBody, options);
+            
+            const axiosRequestConfig = {
+                method: 'post',
+                url: endpoint,
+                data: requestBody,
+                ...(isStream ? { responseType: 'stream' } : {})
+            };
+            this._applySidecar(axiosRequestConfig);
+            
+            const response = await this.currentAxiosInstance.request(axiosRequestConfig);
             return response.data;
 
         } catch (error) {
@@ -656,6 +668,9 @@ export class QwenApiService {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
         }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
+        }
 
         // 检查 token 是否即将过期，如果是则推送到刷新队列
         if (this.isExpiryDateNear()) {
@@ -676,6 +691,9 @@ export class QwenApiService {
         if (requestBody._monitorRequestId) {
             this.config._monitorRequestId = requestBody._monitorRequestId;
             delete requestBody._monitorRequestId;
+        }
+        if (requestBody._requestBaseUrl) {
+            delete requestBody._requestBaseUrl;
         }
 
         // 检查 token 是否即将过期，如果是则推送到刷新队列

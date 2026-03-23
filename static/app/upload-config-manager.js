@@ -13,6 +13,11 @@ let isLoadingConfigs = false; // 防止重复加载配置
  * @param {string} statusFilter - 状态过滤
  */
 function searchConfigs(searchTerm = '', statusFilter = '', providerFilter = '') {
+    // 确保 searchTerm 是字符串，防止事件对象等非字符串被传入
+    if (typeof searchTerm !== 'string') {
+        searchTerm = '';
+    }
+
     if (!allConfigs.length) {
         console.log('没有配置数据可搜索');
         return;
@@ -82,43 +87,145 @@ function createConfigItemElement(config, index) {
     item.className = `config-item-manager ${configStatus}`;
     item.dataset.index = index;
 
-    const statusIcon = config.isUsed ? 'fa-check-circle' : 'fa-circle';
+    const statusIcon = config.isUsed ? 'fa-check-circle' : 'fa-circle-question';
     const statusText = config.isUsed ? t('upload.statusFilter.used') : t('upload.statusFilter.unused');
 
     const typeIcon = config.type === 'oauth' ? 'fa-key' :
                     config.type === 'api-key' ? 'fa-lock' :
                     config.type === 'provider-pool' ? 'fa-network-wired' :
-                    config.type === 'system-prompt' ? 'fa-file-text' : 'fa-cog';
+                    config.type === 'system-prompt' ? 'fa-file-text' :
+                    config.type === 'plugins' ? 'fa-plug' :
+                    config.type === 'usage' ? 'fa-chart-line' :
+                    config.type === 'config' ? 'fa-cog' :
+                    config.type === 'database' ? 'fa-database' : 'fa-file-code';
+
+    // 检测提供商信息
+    const providerInfo = detectProviderFromPath(config.path);
+    const providerBadge = providerInfo ? 
+        `<span class="provider-type-tag tag-${providerInfo.shortName}">
+            <i class="fas fa-robot"></i> ${providerInfo.displayName}
+        </span>` : '';
 
     // 生成关联详情HTML
     const usageInfoHtml = generateUsageInfoHtml(config);
     
+    // 获取关联的节点简要信息
+    let linkedNodesInfo = '';
+    if (config.isUsed && config.usageInfo && config.usageInfo.usageDetails) {
+        const details = config.usageInfo.usageDetails;
+        
+        // 收集节点信息及其状态
+        const nodes = details.map(d => {
+            let name = '';
+            let isPool = false;
+            if (d.type === 'Provider Pool' || d.type === '提供商池') {
+                isPool = true;
+                if (d.nodeName) name = d.nodeName;
+                else if (d.uuid) name = d.uuid.substring(0, 8);
+                else name = d.location;
+            } else if (d.type === 'Main Config' || d.type === '主要配置') {
+                name = t('upload.usage.mainConfig');
+            }
+            
+            if (!name) return null;
+            
+            return {
+                name,
+                isPool,
+                isHealthy: d.isHealthy,
+                isDisabled: d.isDisabled
+            };
+        }).filter(Boolean);
+        
+        if (nodes.length > 0) {
+            // 去重，但保留状态信息（如果有多个相同名称的节点，状态可能不同，这里按名称去重以节省空间，取第一个）
+            const uniqueNodes = [];
+            const seenNames = new Set();
+            for (const node of nodes) {
+                if (!seenNames.has(node.name)) {
+                    uniqueNodes.push(node);
+                    seenNames.add(node.name);
+                }
+            }
+
+            linkedNodesInfo = `<div class="linked-nodes-tags">
+                ${uniqueNodes.map(node => {
+                    let statusClass = '';
+                    let statusIcon = 'fa-link';
+                    
+                    if (node.isPool) {
+                        if (node.isDisabled) {
+                            statusClass = 'status-disabled';
+                            statusIcon = 'fa-ban';
+                        } else if (!node.isHealthy) {
+                            statusClass = 'status-unhealthy';
+                            statusIcon = 'fa-exclamation-circle';
+                        } else {
+                            statusClass = 'status-healthy';
+                            statusIcon = 'fa-check-circle';
+                        }
+                    }
+                    
+                    return `<span class="node-tag ${statusClass}" title="${node.name}"><i class="fas ${statusIcon}"></i> ${node.name}</span>`;
+                }).join('')}
+            </div>`;
+        }
+    }
+
     // 判断是否可以一键关联（未关联且路径包含支持的提供商目录）
-    const providerInfo = detectProviderFromPath(config.path);
     const canQuickLink = !config.isUsed && providerInfo !== null;
     const quickLinkBtnHtml = canQuickLink ?
-        `<button class="btn-quick-link" data-path="${config.path}" title="一键关联到 ${providerInfo.displayName}">
-            <i class="fas fa-link"></i> ${providerInfo.shortName}
+        `<button class="btn-quick-link-main" data-path="${config.path}" title="一键关联到 ${providerInfo.displayName}">
+            <i class="fas fa-link"></i> ${t('upload.action.quickLink')}
         </button>` : '';
 
     item.innerHTML = `
-        <div class="config-item-header">
-            <div class="config-item-name">${config.name}</div>
-            <div class="config-item-path" title="${config.path}">${config.path}</div>
-        </div>
-        <div class="config-item-meta">
-            <div class="config-item-size">${formatFileSize(config.size)}</div>
-            <div class="config-item-modified">${formatDate(config.modified)}</div>
-            <div class="config-item-status">
-                <i class="fas ${statusIcon}"></i>
-                <span data-i18n="${config.isUsed ? 'upload.statusFilter.used' : 'upload.statusFilter.unused'}">${statusText}</span>
-                ${quickLinkBtnHtml}
+        <div class="config-item-main-row">
+            <div class="config-item-left">
+                <div class="config-item-icon-wrapper ${config.type || 'other'}">
+                    <i class="fas ${typeIcon}"></i>
+                </div>
+                <div class="config-item-title-area">
+                    <div class="config-item-name-line">
+                        <span class="config-item-display-name">${config.name}</span>
+                        ${providerBadge}
+                    </div>
+                    <div class="config-item-path-line" title="${config.path}">
+                        <i class="fas fa-folder-open"></i> ${config.path}
+                    </div>
+                </div>
+            </div>
+            
+            <div class="config-item-middle">
+                <div class="config-meta-info">
+                    <span class="meta-item" title="文件大小">
+                        <i class="fas fa-weight-hanging"></i> ${formatFileSize(config.size)}
+                    </span>
+                    <span class="meta-item" title="最后修改时间">
+                        <i class="fas fa-calendar-alt"></i> ${formatDate(config.modified)}
+                    </span>
+                </div>
+            </div>
+
+            <div class="config-item-right">
+                <div class="config-status-col">
+                    <div class="config-status-indicator ${configStatus}">
+                        <i class="fas ${statusIcon}"></i>
+                        <span data-i18n="${config.isUsed ? 'upload.statusFilter.used' : 'upload.statusFilter.unused'}">${statusText}</span>
+                    </div>
+                    ${linkedNodesInfo}
+                    ${quickLinkBtnHtml}
+                </div>
+                <div class="config-item-chevron">
+                    <i class="fas fa-chevron-right"></i>
+                </div>
             </div>
         </div>
+
         <div class="config-item-details">
             <div class="config-details-grid">
-                <div class="config-detail-item">
-                    <div class="config-detail-label" data-i18n="upload.detail.path">文件路径</div>
+                <div class="config-detail-item path-item">
+                    <div class="config-detail-label" data-i18n="upload.detail.path">文件完整路径</div>
                     <div class="config-detail-value">${config.path}</div>
                 </div>
                 <div class="config-detail-item">
@@ -126,18 +233,21 @@ function createConfigItemElement(config, index) {
                     <div class="config-detail-value">${formatFileSize(config.size)}</div>
                 </div>
                 <div class="config-detail-item">
-                    <div class="config-detail-label" data-i18n="upload.detail.modified">最后修改</div>
+                    <div class="config-detail-label" data-i18n="upload.detail.modified">最后修改时间</div>
                     <div class="config-detail-value">${formatDate(config.modified)}</div>
                 </div>
                 <div class="config-detail-item">
-                    <div class="config-detail-label" data-i18n="upload.detail.status">关联状态</div>
-                    <div class="config-detail-value" data-i18n="${config.isUsed ? 'upload.statusFilter.used' : 'upload.statusFilter.unused'}">${statusText}</div>
+                    <div class="config-detail-label" data-i18n="upload.detail.status">当前关联状态</div>
+                    <div class="config-detail-value status-text-${configStatus}" data-i18n="${config.isUsed ? 'upload.statusFilter.used' : 'upload.statusFilter.unused'}">${statusText}</div>
                 </div>
             </div>
             ${usageInfoHtml}
             <div class="config-item-actions">
                 <button class="btn-small btn-view" data-path="${config.path}">
                     <i class="fas fa-eye"></i> <span data-i18n="upload.action.view">${t('upload.action.view')}</span>
+                </button>
+                <button class="btn-small btn-download" data-path="${config.path}">
+                    <i class="fas fa-download"></i> <span data-i18n="upload.action.download">${t('upload.action.download')}</span>
                 </button>
                 <button class="btn-small btn-delete-small" data-path="${config.path}">
                     <i class="fas fa-trash"></i> <span data-i18n="upload.action.delete">${t('upload.action.delete')}</span>
@@ -148,12 +258,20 @@ function createConfigItemElement(config, index) {
 
     // 添加按钮事件监听器
     const viewBtn = item.querySelector('.btn-view');
+    const downloadBtn = item.querySelector('.btn-download');
     const deleteBtn = item.querySelector('.btn-delete-small');
     
     if (viewBtn) {
         viewBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             viewConfig(config.path);
+        });
+    }
+
+    if (downloadBtn) {
+        downloadBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            downloadSingleConfig(config.path);
         });
     }
     
@@ -165,7 +283,7 @@ function createConfigItemElement(config, index) {
     }
 
     // 一键关联按钮事件
-    const quickLinkBtn = item.querySelector('.btn-quick-link');
+    const quickLinkBtn = item.querySelector('.btn-quick-link-main');
     if (quickLinkBtn) {
         quickLinkBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -175,12 +293,67 @@ function createConfigItemElement(config, index) {
 
     // 添加点击事件展开/折叠详情
     item.addEventListener('click', (e) => {
-        if (!e.target.closest('.config-item-actions')) {
+        if (!e.target.closest('.config-item-actions') && !e.target.closest('.config-detail-value')) {
             item.classList.toggle('expanded');
         }
     });
 
+    // 点击路径复制
+    const pathValueEl = item.querySelector('.path-item .config-detail-value');
+    if (pathValueEl) {
+        pathValueEl.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const textToCopy = config.path;
+            
+            // 优先使用 Clipboard API
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                try {
+                    await navigator.clipboard.writeText(textToCopy);
+                    showToast(t('common.success'), t('common.copy.success'), 'success');
+                } catch (err) {
+                    console.error('Clipboard API failed:', err);
+                    fallbackCopyTextToClipboard(textToCopy);
+                }
+            } else {
+                fallbackCopyTextToClipboard(textToCopy);
+            }
+        });
+        pathValueEl.title = t('models.clickToCopy') || '点击复制';
+    }
+
     return item;
+}
+
+/**
+ * 降级复制方案
+ * @param {string} text - 要复制的文本
+ */
+function fallbackCopyTextToClipboard(text) {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    
+    // 确保不可见且不影响布局
+    textArea.style.position = "fixed";
+    textArea.style.left = "-9999px";
+    textArea.style.top = "0";
+    document.body.appendChild(textArea);
+    
+    textArea.focus();
+    textArea.select();
+
+    try {
+        const successful = document.execCommand('copy');
+        if (successful) {
+            showToast(t('common.success'), t('common.copy.success'), 'success');
+        } else {
+            showToast(t('common.error'), t('common.copy.failed'), 'error');
+        }
+    } catch (err) {
+        console.error('Fallback copy failed:', err);
+        showToast(t('common.error'), t('common.copy.failed'), 'error');
+    }
+
+    document.body.removeChild(textArea);
 }
 
 /**
@@ -212,11 +385,45 @@ function generateUsageInfoHtml(config) {
         const isMain = detail.type === '主要配置' || detail.type === 'Main Config';
         const icon = isMain ? 'fa-cog' : 'fa-network-wired';
         const usageTypeKey = isMain ? 'main_config' : 'provider_pool';
+        
+        // 严格遵循显示优先级：自定义名称 > UUID > 默认位置描述
+        let displayTitle = '';
+        let subtitle = '';
+        
+        if (detail.nodeName) {
+            displayTitle = detail.nodeName;
+            subtitle = detail.providerType ? `${detail.providerType} - ${detail.location}` : detail.location;
+        } else if (detail.uuid) {
+            displayTitle = detail.uuid;
+            subtitle = detail.providerType ? `${detail.providerType} - ${detail.location}` : detail.location;
+        } else {
+            displayTitle = detail.location;
+            subtitle = detail.providerType || '';
+        }
+
+        // 生成节点状态标签
+        let statusTag = '';
+        if (detail.type === 'Provider Pool' || detail.type === '提供商池') {
+            if (detail.isDisabled) {
+                statusTag = `<span class="node-status-tag disabled" data-i18n="modal.provider.status.disabled">${t('modal.provider.status.disabled')}</span>`;
+            } else if (!detail.isHealthy) {
+                statusTag = `<span class="node-status-tag unhealthy" data-i18n="modal.provider.status.unhealthy">${t('modal.provider.status.unhealthy')}</span>`;
+            } else {
+                statusTag = `<span class="node-status-tag healthy" data-i18n="modal.provider.status.healthy">${t('modal.provider.status.healthy')}</span>`;
+            }
+        }
+
         detailsHtml += `
             <div class="usage-detail-item" data-usage-type="${usageTypeKey}">
                 <i class="fas ${icon}"></i>
-                <span class="usage-detail-type">${detail.type}</span>
-                <span class="usage-detail-location">${detail.location}</span>
+                <div class="usage-detail-content">
+                    <div class="usage-detail-top">
+                        <span class="usage-detail-type">${detail.type}</span>
+                        <span class="usage-detail-location">${displayTitle}</span>
+                        ${statusTag}
+                    </div>
+                    ${subtitle ? `<div class="usage-detail-subtitle">${subtitle}</div>` : ''}
+                </div>
             </div>
         `;
     });
@@ -232,6 +439,28 @@ function generateUsageInfoHtml(config) {
             </div>
         </div>
     `;
+}
+
+/**
+ * 对配置列表进行排序
+ * 规则：未关联的排在前面，然后按修改时间倒序排列
+ * @param {Array} configs - 配置列表
+ * @returns {Array} 排序后的列表
+ */
+function sortConfigs(configs) {
+    if (!configs || !configs.length) return [];
+    
+    return configs.sort((a, b) => {
+        // 1. 未关联优先 (isUsed 为 false 的排在前面)
+        if (a.isUsed !== b.isUsed) {
+            return a.isUsed ? 1 : -1;
+        }
+        
+        // 2. 时间倒序 (最新的排在前面)
+        const dateA = new Date(a.modified);
+        const dateB = new Date(b.modified);
+        return dateB - dateA;
+    });
 }
 
 /**
@@ -291,8 +520,16 @@ function updateStats() {
 
 /**
  * 加载配置文件列表
+ * @param {string} searchTerm - 搜索关键词
+ * @param {string} statusFilter - 状态过滤
+ * @param {string} providerFilter - 提供商过滤
  */
-async function loadConfigList() {
+async function loadConfigList(searchTerm = '', statusFilter = '', providerFilter = '') {
+    // 确保 searchTerm 是字符串，处理事件监听器直接调用的情况
+    if (typeof searchTerm !== 'string') {
+        searchTerm = '';
+    }
+
     // 防止重复加载
     if (isLoadingConfigs) {
         console.log('正在加载配置列表，跳过重复调用');
@@ -304,19 +541,23 @@ async function loadConfigList() {
     
     try {
         const result = await window.apiClient.get('/upload-configs');
-        allConfigs = result;
-        filteredConfigs = [...allConfigs];
-        renderConfigList();
-        updateStats();
+        allConfigs = sortConfigs(result);
+        
+        // 如果提供了过滤参数，则执行搜索过滤，否则显示全部
+        if (searchTerm || statusFilter || providerFilter) {
+            searchConfigs(searchTerm, statusFilter, providerFilter);
+        } else {
+            filteredConfigs = [...allConfigs];
+            renderConfigList();
+            updateStats();
+        }
+        
         console.log('配置列表加载成功，共', allConfigs.length, '个项目');
-        // showToast(t('common.success'), t('upload.refresh') + '成功', 'success');
     } catch (error) {
         console.error('加载配置列表失败:', error);
         showToast(t('common.error'), t('common.error') + ': ' + error.message, 'error');
-        
-        // 使用模拟数据作为示例
-        allConfigs = generateMockConfigData();
-        filteredConfigs = [...allConfigs];
+        allConfigs = [];
+        filteredConfigs = [];
         renderConfigList();
         updateStats();
     } finally {
@@ -326,67 +567,44 @@ async function loadConfigList() {
 }
 
 /**
- * 生成模拟配置数据（用于演示）
- * @returns {Array} 模拟配置数据
+ * 下载单个配置文件
+ * @param {string} filePath - 文件路径
  */
-function generateMockConfigData() {
-    return [
-        {
-            name: 'provider_pools.json',
-            path: './configs/provider_pools.json',
-            type: 'provider-pool',
-            size: 2048,
-            modified: '2025-11-11T04:30:00.000Z',
-            isUsed: true,
-            content: JSON.stringify({
-                "gemini-cli-oauth": [
-                    {
-                        "GEMINI_OAUTH_CREDS_FILE_PATH": "~/.gemini/oauth/creds.json",
-                        "PROJECT_ID": "test-project"
-                    }
-                ]
-            }, null, 2)
-        },
-        {
-            name: 'config.json',
-            path: './configs/config.json',
-            type: 'other',
-            size: 1024,
-            modified: '2025-11-10T12:00:00.000Z',
-            isUsed: true,
-            content: JSON.stringify({
-                "REQUIRED_API_KEY": "123456",
-                "SERVER_PORT": 3000
-            }, null, 2)
-        },
-        {
-            name: 'oauth_creds.json',
-            path: '~/.gemini/oauth/creds.json',
-            type: 'oauth',
-            size: 512,
-            modified: '2025-11-09T08:30:00.000Z',
-            isUsed: false,
-            content: '{"client_id": "test", "client_secret": "test"}'
-        },
-        {
-            name: 'input_system_prompt.txt',
-            path: './configs/input_system_prompt.txt',
-            type: 'system-prompt',
-            size: 256,
-            modified: '2025-11-08T15:20:00.000Z',
-            isUsed: true,
-            content: '你是一个有用的AI助手...'
-        },
-        {
-            name: 'invalid_config.json',
-            path: './invalid_config.json',
-            type: 'other',
-            size: 128,
-            modified: '2025-11-07T10:15:00.000Z',
-            isUsed: false,
-            content: '{"invalid": json}'
+async function downloadSingleConfig(filePath) {
+    if (!filePath) return;
+    
+    try {
+        const fileName = filePath.split(/[/\\]/).pop();
+        
+        const token = localStorage.getItem('authToken');
+        const headers = {
+            'Authorization': token ? `Bearer ${token}` : ''
+        };
+
+        const response = await fetch(`/api/upload-configs/download/${encodeURIComponent(filePath)}`, {
+            method: 'GET',
+            headers: headers
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
         }
-    ];
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        showToast(t('common.success'), t('usage.card.downloadSuccess') || '文件下载成功', 'success');
+    } catch (error) {
+        console.error('下载配置文件失败:', error);
+        showToast(t('common.error'), (t('usage.card.downloadFailed') || '下载配置文件失败') + ': ' + error.message, 'error');
+    }
 }
 
 /**
@@ -497,37 +715,23 @@ function closeConfigModal() {
 async function copyConfigContent(path) {
     try {
         const fileData = await window.apiClient.get(`/upload-configs/view/${encodeURIComponent(path)}`);
-        
-        // 尝试使用现代 Clipboard API
+        const textToCopy = fileData.content;
+
+        // 优先使用 Clipboard API
         if (navigator.clipboard && navigator.clipboard.writeText) {
-            await navigator.clipboard.writeText(fileData.content);
-            showToast(t('common.success'), t('oauth.success.msg'), 'success');
-        } else {
-            // 降级方案：使用传统的 document.execCommand
-            const textarea = document.createElement('textarea');
-            textarea.value = fileData.content;
-            textarea.style.position = 'fixed';
-            textarea.style.opacity = '0';
-            document.body.appendChild(textarea);
-            textarea.select();
-            
             try {
-                const successful = document.execCommand('copy');
-                if (successful) {
-                    showToast(t('common.copy.success'), 'success');
-                } else {
-                    showToast(t('common.copy.failed'), 'error');
-                }
+                await navigator.clipboard.writeText(textToCopy);
+                showToast(t('common.success'), t('common.copy.success'), 'success');
             } catch (err) {
-                console.error('复制失败:', err);
-                showToast(t('common.copy.failed'), 'error');
-            } finally {
-                document.body.removeChild(textarea);
+                console.error('Clipboard API failed:', err);
+                fallbackCopyTextToClipboard(textToCopy);
             }
+        } else {
+            fallbackCopyTextToClipboard(textToCopy);
         }
     } catch (error) {
         console.error('复制失败:', error);
-        showToast(t('common.copy.failed') + ': ' + error.message, 'error');
+        showToast(t('common.error'), t('common.copy.failed') + ': ' + error.message, 'error');
     }
 }
 
@@ -736,7 +940,8 @@ function initUploadConfigManager() {
             const searchTerm = searchInput?.value.trim() || '';
             const currentStatusFilter = statusFilter?.value || '';
             const currentProviderFilter = providerFilter?.value || '';
-            searchConfigs(searchTerm, currentStatusFilter, currentProviderFilter);
+            // 点击搜索按钮时，调接口刷新数据
+            loadConfigList(searchTerm, currentStatusFilter, currentProviderFilter);
         });
     }
 
@@ -759,7 +964,7 @@ function initUploadConfigManager() {
     }
 
     if (refreshBtn) {
-        refreshBtn.addEventListener('click', loadConfigList);
+        refreshBtn.addEventListener('click', () => loadConfigList());
     }
 
     if (downloadAllBtn) {
@@ -1091,6 +1296,52 @@ async function downloadAllConfigs() {
     }
 }
 
+/**
+ * 动态更新提供商筛选下拉框选项
+ * @param {Array} providerConfigs - 提供商配置列表
+ */
+function updateProviderFilterOptions(providerConfigs) {
+    const filterSelect = document.getElementById('configProviderFilter');
+    if (!filterSelect) return;
+
+    // 保存当前选中的值
+    const currentValue = filterSelect.value;
+
+    // 清空现有选项（保留第一个"全部提供商"）
+    const firstOption = filterSelect.options[0];
+    filterSelect.innerHTML = '';
+    if (firstOption) {
+        filterSelect.appendChild(firstOption);
+    } else {
+        const option = document.createElement('option');
+        option.value = '';
+        option.setAttribute('data-i18n', 'upload.providerFilter.all');
+        option.textContent = t('upload.providerFilter.all');
+        filterSelect.appendChild(option);
+    }
+
+    // 添加动态选项
+    providerConfigs.forEach(config => {
+        // 根据是否有 defaultPath 来过滤，这意味着该提供商支持 OAuth 凭据文件管理
+        if (config.visible !== false && config.defaultPath) {
+            const option = document.createElement('option');
+            option.value = config.id;
+            option.textContent = config.name;
+            filterSelect.appendChild(option);
+        }
+    });
+
+    // 添加"其他"选项
+    const otherOption = document.createElement('option');
+    otherOption.value = 'other';
+    otherOption.setAttribute('data-i18n', 'upload.providerFilter.other');
+    otherOption.textContent = t('upload.providerFilter.other');
+    filterSelect.appendChild(otherOption);
+
+    // 恢复选中的值（如果还存在）
+    filterSelect.value = currentValue;
+}
+
 // 导出函数
 export {
     initUploadConfigManager,
@@ -1101,5 +1352,6 @@ export {
     closeConfigModal,
     copyConfigContent,
     reloadConfig,
-    deleteUnboundConfigs
+    deleteUnboundConfigs,
+    updateProviderFilterOptions
 };
